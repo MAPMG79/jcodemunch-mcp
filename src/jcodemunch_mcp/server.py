@@ -415,6 +415,13 @@ def main(argv: Optional[list[str]] = None):
         handlers=handlers,
     )
 
+    # Log extra extension mappings if configured
+    _extra_exts = os.environ.get("JCODEMUNCH_EXTRA_EXTENSIONS", "").strip()
+    if _extra_exts:
+        logging.getLogger(__name__).info(
+            "Extra extension mappings active: %s", _extra_exts
+        )
+
     asyncio.run(run_server())
 
 

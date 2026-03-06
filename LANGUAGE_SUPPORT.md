@@ -106,3 +106,26 @@ print_tree(tree.root_node)
 ```
 
 This inspection process helps identify the correct `symbol_node_types`, `name_fields`, and extraction rules when adding support for a new language.
+
+---
+
+## Configuration
+
+### Custom Extension Mappings (`JCODEMUNCH_EXTRA_EXTENSIONS`)
+
+Set the `JCODEMUNCH_EXTRA_EXTENSIONS` environment variable to add or override file extension → language mappings without modifying source code.
+
+**Format:** comma-separated `.ext:lang` pairs
+
+```
+JCODEMUNCH_EXTRA_EXTENSIONS=".cgi:perl,.psgi:perl,.pl6:perl"
+```
+
+**Rules:**
+- Extensions can add new mappings or override built-in ones.
+- `lang` must be a registered language name (e.g. `perl`, `python`, `go`). Unknown language values are logged as a warning and skipped.
+- Malformed entries (missing colon, empty extension or language) are logged as a warning and skipped.
+- Built-in mappings are never removed — only added to or overridden.
+- Mappings are applied once at import time and are visible to all indexing tools.
+
+**Registered language names:** `python`, `javascript`, `typescript`, `go`, `rust`, `java`, `php`, `dart`, `csharp`, `c`, `perl`
