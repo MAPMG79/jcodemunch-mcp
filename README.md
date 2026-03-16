@@ -129,6 +129,8 @@ IDs remain stable across re-indexing when path, qualified name, and kind are unc
 
 ## Installation
 
+> **New here?** See [QUICKSTART.md](QUICKSTART.md) for a focused 3-step setup guide.
+
 ### Prerequisites
 
 - Python 3.10+
