@@ -5,51 +5,68 @@ from pathlib import Path
 
 from jcodemunch_mcp.storage.index_store import IndexStore
 from jcodemunch_mcp.storage.sqlite_store import SQLiteIndexStore
-from jcodemunch_mcp.parser.symbols import Symbol
-
-
-def _make_symbol(name: str) -> Symbol:
-    return Symbol(
-        id=f"main.py::{name}#function", file="main.py", name=name,
-        qualified_name=name, kind="function", language="python",
-        signature=f"def {name}()", line=1, end_line=3,
-        byte_offset=0, byte_length=20,
-    )
 
 
 def test_migrate_json_to_sqlite(tmp_path):
-    """Auto-migration from JSON produces identical CodeIndex."""
-    # Create a JSON index using the original IndexStore
-    json_store = IndexStore(base_path=str(tmp_path))
-    sym = _make_symbol("greet")
-    json_store.save_index(
-        owner="local", name="test-abc123",
-        source_files=["main.py"], symbols=[sym],
-        raw_files={"main.py": "def greet(): pass"},
-        file_hashes={"main.py": "hash1"},
-        git_head="abc",
-        file_summaries={"main.py": "Greeting module"},
-        source_root="/tmp/proj",
-        display_name="test",
-        file_mtimes={"main.py": 1234567890000000000},
-    )
+    """JSON→SQLite migration preserves all index data."""
+    # Manually write a legacy JSON index file (simulating old-format data)
+    json_data = {
+        "repo": "local/test-abc123",
+        "owner": "local",
+        "name": "test-abc123",
+        "indexed_at": "2025-01-01T00:00:00",
+        "index_version": 4,
+        "source_files": ["main.py"],
+        "languages": {"python": 1},
+        "symbols": [{
+            "id": "main.py::greet#function",
+            "file": "main.py",
+            "name": "greet",
+            "qualified_name": "greet",
+            "kind": "function",
+            "language": "python",
+            "signature": "def greet()",
+            "summary": "",
+            "docstring": "",
+            "decorators": [],
+            "keywords": [],
+            "parent": None,
+            "line": 1,
+            "end_line": 3,
+            "byte_offset": 0,
+            "byte_length": 20,
+            "content_hash": "",
+            "ecosystem_context": "",
+        }],
+        "file_hashes": {"main.py": "hash1"},
+        "git_head": "abc",
+        "file_summaries": {"main.py": "Greeting module"},
+        "source_root": "/tmp/proj",
+        "display_name": "test",
+        "file_languages": {"main.py": "python"},
+        "imports": {"main.py": [{"specifier": "os", "names": ["path"]}]},
+        "context_metadata": {},
+        "file_blob_shas": {},
+        "file_mtimes": {"main.py": 1234567890000000000.0},
+    }
 
-    # Load via JSON to get expected values
-    json_index = json_store.load_index("local", "test-abc123")
-    assert json_index is not None
-
-    # Now migrate
-    sqlite_store = SQLiteIndexStore(base_path=str(tmp_path))
     json_path = tmp_path / "local-test-abc123.json"
+    json_path.write_text(json.dumps(json_data, indent=2), encoding="utf-8")
+
+    # Migrate JSON → SQLite
+    sqlite_store = SQLiteIndexStore(base_path=str(tmp_path))
     migrated = sqlite_store.migrate_from_json(json_path, "local", "test-abc123")
 
-    assert migrated is not None
-    assert migrated.repo == json_index.repo
-    assert len(migrated.symbols) == len(json_index.symbols)
-    assert migrated.file_hashes == json_index.file_hashes
-    assert migrated.git_head == json_index.git_head
-    assert migrated.display_name == json_index.display_name
+    assert migrated is not None, "migrate_from_json returned None"
+    assert migrated.repo == "local/test-abc123"
+    assert migrated.git_head == "abc"
+    assert migrated.display_name == "test"
+    assert migrated.file_hashes == {"main.py": "hash1"}
+    assert migrated.file_mtimes == {"main.py": 1234567890000000000.0}
+    assert migrated.imports == {"main.py": [{"specifier": "os", "names": ["path"]}]}
+    assert len(migrated.symbols) == 1
+    assert migrated.symbols[0]["name"] == "greet"
 
-    # Verify .json.migrated exists
+    # Verify .json.migrated exists and original .json is gone
     assert (tmp_path / "local-test-abc123.json.migrated").exists()
-    assert not (tmp_path / "local-test-abc123.json").exists()
+    assert not json_path.exists()

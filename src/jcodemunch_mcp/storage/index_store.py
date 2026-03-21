@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from ..parser.symbols import Symbol
+from .sqlite_store import SQLiteIndexStore
 
 logger = logging.getLogger(__name__)
 
@@ -206,6 +207,7 @@ class IndexStore:
             self.base_path = Path.home() / ".code-index"
 
         self.base_path.mkdir(parents=True, exist_ok=True)
+        self._sqlite = SQLiteIndexStore(base_path=base_path)
 
     def _safe_repo_component(self, value: str, field_name: str) -> str:
         """Validate and sanitize owner/name components used in on-disk cache paths.
@@ -406,7 +408,13 @@ class IndexStore:
         file_blob_shas: Optional[dict[str, str]] = None,
         file_mtimes: Optional[dict[str, float]] = None,
     ) -> "CodeIndex":
-        """Save index and raw files to storage."""
+        """Save index via SQLite backend."""
+        # Validate owner/name for path separators (before any slug computation)
+        if "/" in owner or "\\" in owner:
+            raise ValueError(f"Invalid owner: {owner!r}")
+        if "/" in name or "\\" in name:
+            raise ValueError(f"Path separator not allowed in name: {name!r}")
+        # Preserve existing language computation logic
         normalized_source_files = sorted(dict.fromkeys(source_files or list(raw_files.keys())))
         serialized_symbols = [self._symbol_to_dict(s) for s in symbols]
         merged_file_languages = self._file_languages_for_paths(
@@ -416,137 +424,41 @@ class IndexStore:
         )
         resolved_languages = languages or self._languages_from_file_languages(merged_file_languages)
 
-        # Compute file hashes if not provided
         if file_hashes is None:
             file_hashes = {fp: _file_hash(content) for fp, content in raw_files.items()}
 
-        # Create index
-        index = CodeIndex(
-            repo=f"{owner}/{name}",
-            owner=owner,
-            name=name,
-            indexed_at=datetime.now().isoformat(),
-            source_files=normalized_source_files,
-            languages=resolved_languages,
-            symbols=serialized_symbols,
-            index_version=INDEX_VERSION,
-            file_hashes=file_hashes,
-            git_head=git_head,
-            file_summaries=file_summaries or {},
-            source_root=source_root,
-            file_languages=merged_file_languages,
-            display_name=display_name or name,
-            imports=imports if imports is not None else {},
-            context_metadata=context_metadata or {},
-            file_blob_shas=file_blob_shas or {},
-            file_mtimes=file_mtimes or {},
+        return self._sqlite.save_index(
+            owner=owner, name=name,
+            source_files=normalized_source_files, symbols=symbols,
+            raw_files=raw_files, languages=resolved_languages,
+            file_hashes=file_hashes, git_head=git_head,
+            file_summaries=file_summaries, source_root=source_root,
+            file_languages=merged_file_languages, display_name=display_name,
+            imports=imports, context_metadata=context_metadata,
+            file_blob_shas=file_blob_shas, file_mtimes=file_mtimes,
         )
-
-        # Lock, write index + raw files atomically
-        index_path = self._index_path(owner, name)
-        with FileLock(str(self._lock_path(owner, name))):
-            index_json_bytes = json.dumps(self._index_to_dict(index), indent=2).encode("utf-8")
-            fd, tmp_name = tempfile.mkstemp(dir=index_path.parent, suffix=".json.tmp")
-            try:
-                with os.fdopen(fd, "wb") as f:
-                    f.write(index_json_bytes)
-                Path(tmp_name).replace(index_path)
-            except Exception:
-                Path(tmp_name).unlink(missing_ok=True)
-                raise
-
-            # Write integrity checksum sidecar
-            self._write_checksum(index_path, index_json_bytes)
-
-            # Save raw files
-            content_dir = self._content_dir(owner, name)
-            content_dir.mkdir(parents=True, exist_ok=True)
-
-            for file_path, content in raw_files.items():
-                file_dest = self._safe_content_path(content_dir, file_path)
-                if not file_dest:
-                    raise ValueError(f"Unsafe file path in raw_files: {file_path}")
-                file_dest.parent.mkdir(parents=True, exist_ok=True)
-                self._write_cached_text(file_dest, content)
-
-        self._write_meta_sidecar(index)
-        _invalidate_index_cache()
-        return index
 
     def has_index(self, owner: str, name: str) -> bool:
-        """Return True if an index file exists on disk (regardless of version)."""
-        return self._index_path(owner, name).exists()
+        """Return True if an index exists (SQLite or JSON)."""
+        return self._sqlite.has_index(owner, name) or self._index_path(owner, name).exists()
 
     def load_index(self, owner: str, name: str) -> Optional[CodeIndex]:
-        """Load index from storage. Rejects incompatible versions.
+        """Load index from storage. Prefers SQLite, auto-migrates from JSON."""
+        # Try SQLite first
+        result = self._sqlite.load_index(owner, name)
+        if result is not None:
+            return result
 
-        Uses a process-level LRU cache keyed on (path, mtime_ns) so
-        repeated tool calls in the same session skip disk I/O and JSON
-        deserialization. The cache auto-invalidates when the file changes.
-        """
+        # Try auto-migration from JSON
         index_path = self._index_path(owner, name)
+        if index_path.exists():
+            logger.info("Auto-migrating %s/%s from JSON to SQLite", owner, name)
+            result = self._sqlite.migrate_from_json(index_path, owner, name)
+            if result is not None:
+                _invalidate_index_cache()
+                return result
 
-        if not index_path.exists():
-            return None
-
-        # Integrity checksum verification
-        if not self._verify_checksum(index_path):
-            return None
-
-        mtime_ns = index_path.stat().st_mtime_ns
-        data = _load_index_json_cached(str(index_path), mtime_ns)
-        if data is None:
-            return None
-
-        # Schema validation: require essential fields
-        if not isinstance(data, dict) or "indexed_at" not in data:
-            logger.warning(
-                "Index schema validation failed for %s/%s — missing required fields; re-index to fix",
-                owner, name,
-            )
-            return None
-
-        # Version check
-        stored_version = data.get("index_version", 1)
-        if stored_version > INDEX_VERSION:
-            logger.warning(
-                "load_index version_mismatch — stored v%d > current v%d for %s/%s; rejecting index",
-                stored_version, INDEX_VERSION, owner, name,
-            )
-            return None  # Future version we can't read
-
-        repo_id, stored_owner, stored_name = self._repo_metadata_from_data(data, owner, name)
-        source_files = data.get("source_files", [])
-        symbols = data.get("symbols", [])
-        file_languages = self._file_languages_for_paths(
-            source_files,
-            symbols,
-            existing=data.get("file_languages"),
-        )
-        languages = self._languages_from_file_languages(file_languages)
-        if not languages:
-            languages = data.get("languages", {})
-
-        return CodeIndex(
-            repo=repo_id,
-            owner=stored_owner,
-            name=stored_name,
-            indexed_at=data["indexed_at"],
-            source_files=source_files,
-            languages=languages,
-            symbols=symbols,
-            index_version=stored_version,
-            file_hashes=data.get("file_hashes", {}),
-            git_head=data.get("git_head", ""),
-            file_summaries=data.get("file_summaries", {}),
-            source_root=data.get("source_root", ""),
-            file_languages=file_languages,
-            display_name=data.get("display_name", stored_name),
-            imports=data["imports"] if "imports" in data else None,
-            context_metadata=data.get("context_metadata", {}),
-            file_blob_shas=data.get("file_blob_shas", {}),
-            file_mtimes=data.get("file_mtimes", {}),
-        )
+        return None
 
     def get_symbol_content(self, owner: str, name: str, symbol_id: str, _index: Optional["CodeIndex"] = None) -> Optional[str]:
         """Read symbol source using stored byte offsets.
@@ -722,155 +634,27 @@ class IndexStore:
         file_hashes: Optional[dict[str, str]] = None,
         file_mtimes: Optional[dict[str, float]] = None,
     ) -> Optional[CodeIndex]:
-        """Incrementally update an existing index.
+        """Incrementally update via SQLite backend."""
+        # Compute file_languages for changed/new files using existing logic.
+        # Query only the file_languages column — NOT the full index.
+        changed_or_new = sorted(set(changed_files) | set(new_files))
+        new_symbol_dicts = [self._symbol_to_dict(s) for s in new_symbols]
+        existing_fl = self._sqlite.get_file_languages(owner, name)
+        merged_file_languages = self._file_languages_for_paths(
+            changed_or_new, new_symbol_dicts,
+            existing={**existing_fl, **(file_languages or {})},
+        )
 
-        Removes symbols for deleted/changed files, adds new symbols,
-        updates raw content, and saves atomically. Uses a per-repo file
-        lock to prevent concurrent read-modify-write races.
-        """
-        with FileLock(str(self._lock_path(owner, name))):
-            index = self.load_index(owner, name)
-            if not index:
-                return None
-
-            # Remove symbols for deleted and changed files
-            files_to_remove = set(deleted_files) | set(changed_files)
-            kept_symbols = [s for s in index.symbols if s.get("file") not in files_to_remove]
-
-            # Add new symbols
-            new_symbol_dicts = [self._symbol_to_dict(s) for s in new_symbols]
-            all_symbols_dicts = kept_symbols + new_symbol_dicts
-
-            changed_or_new_files = sorted(set(changed_files) | set(new_files))
-            merged_file_languages = dict(index.file_languages)
-            for file_path in deleted_files:
-                merged_file_languages.pop(file_path, None)
-            merged_file_languages.update(
-                self._file_languages_for_paths(
-                    changed_or_new_files,
-                    new_symbol_dicts,
-                    existing={**index.file_languages, **(file_languages or {})},
-                )
-            )
-
-            recomputed_languages = self._languages_from_file_languages(merged_file_languages)
-            if not recomputed_languages and languages:
-                recomputed_languages = languages
-
-            # Update source files list
-            old_files = set(index.source_files)
-            for f in deleted_files:
-                old_files.discard(f)
-            for f in new_files:
-                old_files.add(f)
-            for f in changed_files:
-                old_files.add(f)
-
-            # Update file hashes — prefer precomputed hashes to avoid
-            # recomputing from raw_files content
-            merged_hashes = dict(index.file_hashes)
-            for f in deleted_files:
-                merged_hashes.pop(f, None)
-            if file_hashes:
-                merged_hashes.update(file_hashes)
-            else:
-                for fp, content in raw_files.items():
-                    merged_hashes[fp] = _file_hash(content)
-
-            # Merge file summaries: keep old, remove deleted, update changed/new
-            merged_summaries = dict(index.file_summaries)
-            for f in deleted_files:
-                merged_summaries.pop(f, None)
-            for f in changed_or_new_files:
-                merged_summaries.pop(f, None)
-            if file_summaries:
-                merged_summaries.update(file_summaries)
-
-            # Merge import graph: keep existing, remove deleted, update changed/new
-            # index.imports is None for pre-v1.3.0 indexes; use {} as base if so
-            merged_imports = dict(index.imports) if index.imports is not None else {}
-            for f in deleted_files:
-                merged_imports.pop(f, None)
-            for f in changed_files:
-                merged_imports.pop(f, None)
-            if imports:
-                merged_imports.update(imports)
-
-            # Merge blob SHAs: keep old, remove deleted, update changed/new
-            merged_blob_shas = dict(index.file_blob_shas)
-            for f in deleted_files:
-                merged_blob_shas.pop(f, None)
-            if file_blob_shas:
-                merged_blob_shas.update(file_blob_shas)
-
-            # Merge file mtimes: keep old, remove deleted, update changed/new
-            merged_mtimes = dict(index.file_mtimes)
-            for f in deleted_files:
-                merged_mtimes.pop(f, None)
-            if file_mtimes:
-                merged_mtimes.update(file_mtimes)
-
-            # Build updated index
-            updated_source_files = sorted(old_files)
-            updated = CodeIndex(
-                repo=f"{owner}/{name}",
-                owner=owner,
-                name=name,
-                indexed_at=datetime.now().isoformat(),
-                source_files=updated_source_files,
-                languages=recomputed_languages,
-                symbols=all_symbols_dicts,
-                index_version=INDEX_VERSION,
-                file_hashes=merged_hashes,
-                git_head=git_head,
-                file_summaries=merged_summaries,
-                source_root=index.source_root,
-                file_languages={fp: merged_file_languages[fp] for fp in updated_source_files if fp in merged_file_languages},
-                display_name=index.display_name,
-                imports=merged_imports,
-                context_metadata=context_metadata if context_metadata is not None else index.context_metadata,
-                file_blob_shas=merged_blob_shas,
-                file_mtimes=merged_mtimes,
-            )
-
-            # Save atomically: unpredictable temp file prevents symlink attacks
-            index_path = self._index_path(owner, name)
-            index_json_bytes = json.dumps(self._index_to_dict(updated), indent=2).encode("utf-8")
-            fd, tmp_name = tempfile.mkstemp(dir=index_path.parent, suffix=".json.tmp")
-            try:
-                with os.fdopen(fd, "wb") as f:
-                    f.write(index_json_bytes)
-                Path(tmp_name).replace(index_path)
-            except Exception:
-                Path(tmp_name).unlink(missing_ok=True)
-                raise
-
-            # Write integrity checksum sidecar
-            self._write_checksum(index_path, index_json_bytes)
-
-            # Update raw files
-            content_dir = self._content_dir(owner, name)
-            content_dir.mkdir(parents=True, exist_ok=True)
-
-            # Remove deleted files from content dir
-            for fp in deleted_files:
-                dead = self._safe_content_path(content_dir, fp)
-                if not dead:
-                    continue
-                if dead.exists():
-                    dead.unlink()
-
-            # Write changed + new files
-            for fp, content in raw_files.items():
-                dest = self._safe_content_path(content_dir, fp)
-                if not dest:
-                    raise ValueError(f"Unsafe file path in raw_files: {fp}")
-                dest.parent.mkdir(parents=True, exist_ok=True)
-                self._write_cached_text(dest, content)
-
-        self._write_meta_sidecar(updated)
-        _invalidate_index_cache()
-        return updated
+        return self._sqlite.incremental_save(
+            owner=owner, name=name,
+            changed_files=changed_files, new_files=new_files,
+            deleted_files=deleted_files, new_symbols=new_symbols,
+            raw_files=raw_files, languages=languages, git_head=git_head,
+            file_summaries=file_summaries, file_languages=merged_file_languages,
+            imports=imports, context_metadata=context_metadata,
+            file_blob_shas=file_blob_shas, file_hashes=file_hashes,
+            file_mtimes=file_mtimes,
+        )
 
     def _languages_from_symbols(self, symbols: list[dict]) -> dict[str, int]:
         """Compute language->file_count from serialized symbols."""
@@ -908,29 +692,36 @@ class IndexStore:
         return repo_entry
 
     def list_repos(self) -> list[dict]:
-        """List all indexed repositories.
-
-        Reads lightweight .meta.json sidecars when available, falling back
-        to full index JSON for older indexes that lack a sidecar.
-        """
+        """List all indexed repositories (SQLite + legacy JSON)."""
         repos = []
         seen_slugs: set[str] = set()
 
-        # Pass 1: read lightweight sidecars
-        for meta_file in self.base_path.glob("*.meta.json"):
+        # Pass 1: SQLite databases
+        for db_file in self.base_path.glob("*.db"):
+            slug = db_file.stem
+            seen_slugs.add(slug)
             try:
-                slug = meta_file.name.removesuffix(".meta.json")
-                seen_slugs.add(slug)
+                entry = self._sqlite._list_repo_from_db(db_file)
+                if entry:
+                    repos.append(entry)
+            except Exception:
+                logger.debug("Skipping corrupted DB: %s", db_file, exc_info=True)
+
+        # Pass 2: legacy JSON (meta sidecars first, then full JSON)
+        for meta_file in self.base_path.glob("*.meta.json"):
+            slug = meta_file.name.removesuffix(".meta.json")
+            if slug in seen_slugs:
+                continue
+            seen_slugs.add(slug)
+            try:
                 with open(meta_file, "r", encoding="utf-8") as f:
                     data = json.load(f)
                 entry = self._repo_entry_from_data(data)
                 if entry:
                     repos.append(entry)
             except Exception:
-                logger.debug("Skipping corrupted meta sidecar: %s", meta_file, exc_info=True)
                 continue
 
-        # Pass 2: fall back to full JSON for indexes without sidecars
         for index_file in self.base_path.glob("*.json"):
             slug = index_file.name.removesuffix(".json")
             if slug in seen_slugs or slug.endswith(".meta"):
@@ -942,32 +733,28 @@ class IndexStore:
                 if entry:
                     repos.append(entry)
             except Exception:
-                logger.debug("Skipping corrupted index file: %s", index_file, exc_info=True)
                 continue
 
         repos.sort(key=lambda repo: repo["repo"])
         return repos
 
     def delete_index(self, owner: str, name: str) -> bool:
-        """Delete an index, its sidecar, and its raw files."""
+        """Delete an index (SQLite + legacy JSON + content dir)."""
+        deleted = self._sqlite.delete_index(owner, name)
+
+        # Also clean up legacy JSON artifacts
         index_path = self._index_path(owner, name)
         meta_path = self._meta_path(owner, name)
         lock_path = self._lock_path(owner, name)
-        content_dir = self._content_dir(owner, name)
-
-        deleted = False
 
         if index_path.exists():
             index_path.unlink()
             deleted = True
-
         meta_path.unlink(missing_ok=True)
         lock_path.unlink(missing_ok=True)
+        self._checksum_path(index_path).unlink(missing_ok=True)
 
-        if content_dir.exists():
-            shutil.rmtree(content_dir)
-            deleted = True
-
+        _invalidate_index_cache()
         return deleted
 
     def _symbol_to_dict(self, symbol: Symbol) -> dict:

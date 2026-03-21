@@ -11,10 +11,12 @@ import shutil
 import sqlite3
 from datetime import datetime
 from pathlib import Path
-from typing import Callable, Optional
+from typing import TYPE_CHECKING, Callable, Optional
 
-from .index_store import CodeIndex, INDEX_VERSION, _file_hash
 from ..parser.symbols import Symbol
+
+if TYPE_CHECKING:
+    from .index_store import CodeIndex
 
 logger = logging.getLogger(__name__)
 
@@ -72,6 +74,18 @@ _META_KEYS = [
     "languages", "context_metadata",
 ]
 
+# Lazily initialized to avoid circular import with index_store
+_INDEX_VERSION: int = 0
+_file_hash: Callable[[str], str] = lambda x: ""
+
+
+def _ensure_index_store_deps() -> None:
+    global _INDEX_VERSION, _file_hash
+    if _INDEX_VERSION == 0:
+        from .index_store import INDEX_VERSION, _file_hash as _fh
+        _INDEX_VERSION = INDEX_VERSION
+        _file_hash = _fh
+
 
 class SQLiteIndexStore:
     """Storage backend using SQLite WAL for code indexes.
@@ -107,6 +121,17 @@ class SQLiteIndexStore:
             conn.execute(pragma)
         conn.executescript(_SCHEMA_SQL)
         return conn
+
+    def checkpoint_and_close(self, owner: str, name: str) -> None:
+        """Compact WAL file on graceful shutdown. Call from server shutdown hook."""
+        db_path = self._db_path(owner, name)
+        if not db_path.exists():
+            return
+        conn = self._connect(db_path)
+        try:
+            conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        finally:
+            conn.close()
 
     def get_file_languages(self, owner: str, name: str) -> dict[str, str]:
         """Query only the files table for path→language mapping.
@@ -174,8 +199,11 @@ class SQLiteIndexStore:
         context_metadata: Optional[dict] = None,
         file_blob_shas: Optional[dict[str, str]] = None,
         file_mtimes: Optional[dict[str, float]] = None,
-    ) -> CodeIndex:
+    ) -> "CodeIndex":
         """Save a full index to SQLite. Replaces all existing data."""
+        _ensure_index_store_deps()
+        from .index_store import CodeIndex
+
         normalized_source_files = sorted(dict.fromkeys(source_files or list(raw_files.keys())))
 
         if file_hashes is None:
@@ -206,7 +234,7 @@ class SQLiteIndexStore:
             source_files=normalized_source_files,
             languages=languages or {},
             symbols=serialized_symbols,
-            index_version=INDEX_VERSION,
+            index_version=_INDEX_VERSION,
             file_hashes=file_hashes,
             git_head=git_head,
             file_summaries=file_summaries or {},
@@ -271,9 +299,12 @@ class SQLiteIndexStore:
 
         return index
 
-    def load_index(self, owner: str, name: str) -> Optional[CodeIndex]:
+    def load_index(self, owner: str, name: str) -> Optional["CodeIndex"]:
         """Load index from SQLite, constructing a CodeIndex dataclass."""
-        db_path = self._db_path(owner, name)
+        _ensure_index_store_deps()
+        # Sanitize name so "my project (v2)" maps to the same .db as save_index
+        safe_name = self._safe_repo_component(name, "name")
+        db_path = self._db_path(owner, safe_name)
         if not db_path.exists():
             return None
 
@@ -284,8 +315,8 @@ class SQLiteIndexStore:
                 return None
 
             stored_version = int(meta.get("index_version", "0"))
-            if stored_version > INDEX_VERSION:
-                logger.warning("Index version %d > current %d for %s/%s", stored_version, INDEX_VERSION, owner, name)
+            if stored_version > _INDEX_VERSION:
+                logger.warning("Index version %d > current %d for %s/%s", stored_version, _INDEX_VERSION, owner, name)
                 return None
 
             symbol_rows = conn.execute("SELECT * FROM symbols").fetchall()
@@ -297,7 +328,8 @@ class SQLiteIndexStore:
 
     def has_index(self, owner: str, name: str) -> bool:
         """Return True if a .db file exists for this repo."""
-        return self._db_path(owner, name).exists()
+        safe_name = self._safe_repo_component(name, "name")
+        return self._db_path(owner, safe_name).exists()
 
     def incremental_save(
         self,
@@ -317,7 +349,7 @@ class SQLiteIndexStore:
         file_blob_shas: Optional[dict[str, str]] = None,
         file_hashes: Optional[dict[str, str]] = None,
         file_mtimes: Optional[dict[str, float]] = None,
-    ) -> Optional[CodeIndex]:
+    ) -> Optional["CodeIndex"]:
         """Incrementally update an existing index (delta write)."""
         db_path = self._db_path(owner, name)
         if not db_path.exists():
@@ -332,6 +364,17 @@ class SQLiteIndexStore:
             if files_to_remove:
                 placeholders = ",".join("?" * len(files_to_remove))
                 conn.execute(f"DELETE FROM symbols WHERE file IN ({placeholders})", files_to_remove)
+
+            # Preserve existing hash/mtime for changed files before deleting them
+            preserved: dict[str, dict] = {}
+            if changed_files:
+                placeholders = ",".join("?" * len(changed_files))
+                rows = conn.execute(
+                    f"SELECT path, hash, mtime_ns FROM files WHERE path IN ({placeholders})",
+                    changed_files,
+                ).fetchall()
+                for r in rows:
+                    preserved[r["path"]] = {"hash": r["hash"] or "", "mtime_ns": r["mtime_ns"]}
 
             # Delete file records for deleted files
             if deleted_files:
@@ -350,13 +393,18 @@ class SQLiteIndexStore:
             # Update file records for changed + new files
             changed_or_new = sorted(set(changed_files) | set(new_files))
             for fp in changed_or_new:
+                # Prefer caller-supplied values; fall back to preserved (for changed files)
+                # or empty (for truly new files)
+                inp_hashes = file_hashes or {}
+                inp_mtimes = file_mtimes or {}
+                existing = preserved.get(fp, {})
                 conn.execute(
                     "INSERT OR REPLACE INTO files (path, hash, mtime_ns, language, "
                     "summary, blob_sha, imports) VALUES (?, ?, ?, ?, ?, ?, ?)",
                     (
                         fp,
-                        (file_hashes or {}).get(fp, ""),
-                        (file_mtimes or {}).get(fp),
+                        inp_hashes.get(fp, existing.get("hash", "")),
+                        inp_mtimes.get(fp, existing.get("mtime_ns")),
                         (file_languages or {}).get(fp, ""),
                         (file_summaries or {}).get(fp, ""),
                         (file_blob_shas or {}).get(fp, ""),
@@ -483,6 +531,7 @@ class SQLiteIndexStore:
         current_files: dict[str, str],
     ) -> tuple[list[str], list[str], list[str]]:
         """Detect changed, new, and deleted files by comparing hashes."""
+        _ensure_index_store_deps()
         current_hashes = {fp: _file_hash(content) for fp, content in current_files.items()}
         return self.detect_changes_from_hashes(owner, name, current_hashes)
 
@@ -583,7 +632,7 @@ class SQLiteIndexStore:
 
     def get_symbol_content(
         self, owner: str, name: str, symbol_id: str,
-        _index: Optional[CodeIndex] = None,
+        _index: Optional["CodeIndex"] = None,
     ) -> Optional[str]:
         """Read symbol source using stored byte offsets from content cache."""
         if _index is not None:
@@ -607,7 +656,7 @@ class SQLiteIndexStore:
 
     def get_file_content(
         self, owner: str, name: str, file_path: str,
-        _index: Optional[CodeIndex] = None,
+        _index: Optional["CodeIndex"] = None,
     ) -> Optional[str]:
         """Read a cached file's full content."""
         if _index is not None:
@@ -622,17 +671,6 @@ class SQLiteIndexStore:
             return None
 
         return self._read_cached_text(content_path)
-
-    def checkpoint_and_close(self, owner: str, name: str) -> None:
-        """Compact WAL file on graceful shutdown. Call from server shutdown hook."""
-        db_path = self._db_path(owner, name)
-        if not db_path.exists():
-            return
-        conn = self._connect(db_path)
-        try:
-            conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-        finally:
-            conn.close()
 
     # ── Content cache helpers (reused from IndexStore) ──────────────
 
@@ -728,9 +766,11 @@ class SQLiteIndexStore:
 
     def _build_index_from_rows(
         self, meta: dict, symbol_rows: list, file_rows: list, owner: str, name: str,
-    ) -> CodeIndex:
+    ) -> "CodeIndex":
         """Build a CodeIndex from pre-fetched meta dict, symbol rows, and file rows.
         Used by both load_index and incremental_save to avoid redundant queries."""
+        from .index_store import CodeIndex
+
         symbols = [self._row_to_symbol_dict(r) for r in symbol_rows]
         source_files = sorted(r["path"] for r in file_rows)
         file_hashes = {r["path"]: r["hash"] for r in file_rows if r["hash"]}
@@ -738,12 +778,14 @@ class SQLiteIndexStore:
         file_languages = {r["path"]: r["language"] for r in file_rows if r["language"]}
         file_summaries = {r["path"]: r["summary"] for r in file_rows if r["summary"]}
         file_blob_shas = {r["path"]: r["blob_sha"] for r in file_rows if r["blob_sha"]}
-        imports = {}
+        imports: Optional[dict[str, list[dict]]] = {}
         for r in file_rows:
             if r["imports"]:
                 parsed = json.loads(r["imports"])
                 if parsed:
                     imports[r["path"]] = parsed
+        if not imports:
+            imports = None
 
         languages = json.loads(meta.get("languages", "{}"))
         context_metadata = json.loads(meta.get("context_metadata", "{}"))
@@ -769,8 +811,9 @@ class SQLiteIndexStore:
             file_mtimes=file_mtimes,
         )
 
-    def _write_meta(self, conn: sqlite3.Connection, index: CodeIndex) -> None:
+    def _write_meta(self, conn: sqlite3.Connection, index: "CodeIndex") -> None:
         """Write all meta keys for an index."""
+        _ensure_index_store_deps()
         meta = {
             "repo": index.repo,
             "owner": index.owner,
@@ -793,6 +836,57 @@ class SQLiteIndexStore:
         rows = conn.execute("SELECT key, value FROM meta").fetchall()
         return {row["key"]: row["value"] for row in rows}
 
+    def _file_languages_for_paths(
+        self,
+        paths: list[str],
+        symbols: list[dict],
+        existing: Optional[dict[str, str]] = None,
+    ) -> dict[str, str]:
+        """Fill file -> language for the given paths using symbols then extension fallback."""
+        result = dict(existing) if existing else {}
+        sym_by_file: dict[str, list[dict]] = {}
+        for sym in symbols:
+            sym_by_file.setdefault(sym.get("file", ""), []).append(sym)
+        for path in paths:
+            if path in result:
+                continue
+            file_syms = sym_by_file.get(path, [])
+            if file_syms:
+                lang = file_syms[0].get("language", "")
+                if lang:
+                    result[path] = lang
+        if len(result) < len(paths):
+            ext_map = {
+                ".py": "python", ".js": "javascript", ".ts": "typescript",
+                ".jsx": "javascript", ".tsx": "typescript", ".go": "go",
+                ".rs": "rust", ".java": "java", ".c": "c", ".cpp": "cpp",
+                ".h": "cpp", ".cs": "csharp", ".swift": "swift",
+                ".rb": "ruby", ".php": "php", ".dart": "dart",
+                ".kt": "kotlin", ".scala": "scala", ".lua": "lua",
+                ".r": "r", ".m": "objective-c", ".mm": "objective-cpp",
+                ".sh": "bash", ".bash": "bash", ".zsh": "zsh",
+                ".sql": "sql", ".xml": "xml", ".html": "html",
+                ".css": "css", ".scss": "scss", ".less": "less",
+                ".json": "json", ".yaml": "yaml", ".yml": "yaml",
+                ".toml": "toml", ".md": "markdown", ".rst": "rst",
+                ".sh": "bash", ".ps1": "powershell",
+            }
+            for path in paths:
+                if path in result:
+                    continue
+                ext = os.path.splitext(path)[1].lower()
+                lang = ext_map.get(ext, "")
+                if lang:
+                    result[path] = lang
+        return result
+
+    def _languages_from_file_languages(self, file_languages: dict[str, str]) -> dict[str, int]:
+        """Compute language -> file count from stored file language metadata."""
+        counts: dict[str, int] = {}
+        for lang in file_languages.values():
+            counts[lang] = counts.get(lang, 0) + 1
+        return counts
+
     def _repo_slug(self, owner: str, name: str) -> str:
         """Stable slug for file paths (same as IndexStore._repo_slug)."""
         safe_owner = self._safe_repo_component(owner, "owner")
@@ -800,21 +894,24 @@ class SQLiteIndexStore:
         return f"{safe_owner}-{safe_name}"
 
     def _safe_repo_component(self, value: str, field_name: str) -> str:
-        """Validate/sanitize owner/name for filesystem paths."""
+        """Validate/sanitize owner/name for filesystem paths (matches IndexStore._safe_repo_component)."""
         import re
-        if not value:
-            raise ValueError(f"Empty {field_name}")
+
+        if not value or value in {".", ".."}:
+            raise ValueError(f"Invalid {field_name}: {value!r}")
         if "/" in value or "\\" in value:
             raise ValueError(f"Path separator in {field_name}: {value!r}")
-        if value in (".", ".."):
-            raise ValueError(f"Unsafe {field_name}: {value!r}")
-        sanitized = re.sub(r"[^\w\-.]", "-", value)
+        sanitized = re.sub(r"[^A-Za-z0-9._-]", "-", value)
+        sanitized = re.sub(r"-+", "-", sanitized).strip("-")
+        if not sanitized:
+            raise ValueError(f"Invalid {field_name}: sanitized to empty string")
         return sanitized
 
     # ── Migration ───────────────────────────────────────────────────
 
-    def migrate_from_json(self, json_path: Path, owner: str, name: str) -> Optional[CodeIndex]:
+    def migrate_from_json(self, json_path: Path, owner: str, name: str) -> Optional["CodeIndex"]:
         """Read a JSON index file and populate the SQLite database."""
+        _ensure_index_store_deps()
         if not json_path.exists():
             return None
 
@@ -825,6 +922,35 @@ class SQLiteIndexStore:
             logger.warning("Failed to read JSON index for migration: %s", json_path)
             return None
 
+        # Schema validation: require essential fields (matches original load_index)
+        if not isinstance(data, dict) or "indexed_at" not in data:
+            logger.warning(
+                "Migration schema validation failed for %s/%s — missing required fields",
+                owner, name,
+            )
+            return None
+
+        source_files = data.get("source_files", [])
+        symbols = data.get("symbols", [])
+        raw_file_languages = data.get("file_languages", {})
+
+        # Backfill file_languages from symbols (same as original load_index)
+        if not raw_file_languages:
+            merged_fl = self._file_languages_for_paths(
+                source_files, symbols, existing=None,
+            )
+        else:
+            merged_fl = dict(raw_file_languages)
+
+        # Compute languages from file_languages (same as original load_index)
+        computed_languages = self._languages_from_file_languages(merged_fl)
+        if not computed_languages:
+            computed_languages = data.get("languages", {})
+
+        # Preserve imports=None for pre-v1.3.0 indexes (v3 format had no imports field)
+        has_imports_key = "imports" in data
+        stored_imports = data.get("imports") if has_imports_key else None
+
         # Populate SQLite from JSON data
         db_path = self._db_path(owner, name)
         conn = self._connect(db_path)
@@ -834,12 +960,12 @@ class SQLiteIndexStore:
                 "repo": data.get("repo", f"{owner}/{name}"),
                 "owner": data.get("owner", owner),
                 "name": data.get("name", name),
-                "indexed_at": data.get("indexed_at", ""),
-                "index_version": str(data.get("index_version", INDEX_VERSION)),
+                "indexed_at": data["indexed_at"],
+                "index_version": str(data.get("index_version", _INDEX_VERSION)),
                 "git_head": data.get("git_head", ""),
                 "source_root": data.get("source_root", ""),
                 "display_name": data.get("display_name", name),
-                "languages": json.dumps(data.get("languages", {})),
+                "languages": json.dumps(computed_languages),
                 "context_metadata": json.dumps(data.get("context_metadata", {})),
             }
             conn.executemany(
@@ -848,7 +974,6 @@ class SQLiteIndexStore:
             )
 
             # Write symbols
-            symbols = data.get("symbols", [])
             if symbols:
                 conn.executemany(
                     "INSERT OR REPLACE INTO symbols (id, file, name, kind, signature, summary, "
@@ -860,12 +985,11 @@ class SQLiteIndexStore:
             # Write files
             file_hashes = data.get("file_hashes", {})
             file_mtimes = data.get("file_mtimes", {})
-            file_languages = data.get("file_languages", {})
             file_summaries = data.get("file_summaries", {})
             file_blob_shas = data.get("file_blob_shas", {})
-            imports = data.get("imports", {})
+            imports_map = data.get("imports", {})
 
-            for fp in data.get("source_files", []):
+            for fp in source_files:
                 conn.execute(
                     "INSERT OR REPLACE INTO files (path, hash, mtime_ns, language, "
                     "summary, blob_sha, imports) VALUES (?, ?, ?, ?, ?, ?, ?)",
@@ -873,10 +997,10 @@ class SQLiteIndexStore:
                         fp,
                         file_hashes.get(fp, ""),
                         file_mtimes.get(fp),
-                        file_languages.get(fp, ""),
+                        merged_fl.get(fp, ""),
                         file_summaries.get(fp, ""),
                         file_blob_shas.get(fp, ""),
-                        json.dumps(imports.get(fp, [])),
+                        json.dumps(imports_map.get(fp, [])),
                     ),
                 )
 
