@@ -1,9 +1,9 @@
 # jcodemunch-mcp — Project Brief
 
 ## Current State
-- **Version:** 1.10.20 (published to PyPI)
-- **INDEX_VERSION:** 4
-- **Tests:** 1101 passed, 7 skipped
+- **Version:** 1.11.0 (published to PyPI)
+- **INDEX_VERSION:** 6
+- **Tests:** 1103 passed, 7 skipped
 - **Python:** >=3.10
 
 ## Key Files
@@ -129,6 +129,7 @@ Custom parsers (tree-sitter grammar lacks clean named fields):
 | #158 | iEdgir01 | JCODEMUNCH_PATH_MAP — cross-platform path prefix remapping; merged v1.10.18 |
 | #160 | DrHayt | resolve_repo tool — O(1) path-to-repo-ID lookup; merged v1.10.19 |
 | #162 | MariusAdrian88 | Centralized JSONC config: language filtering, tool gating, meta control, per-project overrides; merged v1.10.20 |
+| #163 | MariusAdrian88 | Merge get_symbol+get_symbols into get_symbol_source; batch verify+context_lines; config comma fix; merged v1.11.0 |
 
 
 ## Roadmap / Backlog
@@ -208,6 +209,7 @@ Custom parsers (tree-sitter grammar lacks clean named fields):
 | 1.10.22 | Perf: filesystem overhead reduction — `_VERIFIED_PATHS` cache skips redundant mkdir syscalls on every tool call; `list_repos` fast-exits before legacy JSON glob passes when no `.json` files exist (~5-20ms saved); `_hash_file` caches read content for reuse in parse step (eliminates double-read of changed files during incremental index); `_safe_content_path` caches `content_dir.resolve()` result (eliminates repeated resolve() syscalls in search_text/search_symbols) |
 | 1.10.23 | Perf: INDEX_VERSION 6 — add `size_bytes` column to `files` table; eliminates `os.path.getsize()` stat calls in search_symbols, search_text, and get_file_content (replaced with `index.file_sizes.get()`); auto-migration from v5; `file_sizes` dict propagated through `_patch_index_from_delta` for O(delta) incremental updates |
 | 1.10.24 | Perf: pipeline optimization — cache `get_language_for_path()` result in parse loop and reuse for import extraction (eliminates 2× call per file across all 3 pipeline functions); add `source_bytes` param to `parse_file` and pass pre-encoded bytes from full-index loop (eliminates redundant `content.encode('utf-8')` on every indexed file); add `_file_hash_bytes` helper for bytes-based hashing |
+| 1.11.0 | Breaking: merge get_symbol+get_symbols into get_symbol_source — shape-follows-input (symbol_id→flat object, symbol_ids[]→{symbols,errors}); batch mode gains verify+context_lines; mutual exclusion enforced; config template comma bug fixed; disabled_tools template uses inline commented entries — contributed by MariusAdrian88 (PR #163) |
 
 ## Maintenance Practices
 
