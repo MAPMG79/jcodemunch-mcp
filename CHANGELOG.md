@@ -2,7 +2,10 @@
 
 All notable changes to jcodemunch-mcp are documented here.
 
-## [Unreleased]
+## [1.11.10] - 2026-03-27
+
+### Added
+- **Blast radius depth scoring** — `get_blast_radius` now always returns `direct_dependents_count` (depth-1 count) and `overall_risk_score` (0.0–1.0, weighted by hop distance using `1/depth^0.7`). New `include_depth_scores=true` parameter adds `impact_by_depth` (files grouped by BFS layer, each with a `risk_score`). Flat `confirmed`/`potential` lists are preserved unchanged (backward compatible). 14 new tests.
 
 ## [1.11.9] - 2026-03-27
 
