@@ -94,15 +94,15 @@ def _parse_watcher_flag(value: Optional[str]) -> bool:
 def _get_watcher_enabled(args) -> bool:
     """Determine if the watcher should be enabled for the serve subcommand.
 
-    Precedence: --watcher CLI flag > JCODEMUNCH_WATCH env var > disabled.
+    Precedence (highest to lowest):
+      1. --watcher CLI flag
+      2. config file "watch" key  (JCODEMUNCH_WATCH env var is a fallback for this key
+         when it is absent from config.jsonc — handled by config._apply_env_var_fallback)
     """
     flag = getattr(args, "watcher", None)
     if flag is not None:
         return _parse_watcher_flag(flag)
-    env_val = os.environ.get("JCODEMUNCH_WATCH", "")
-    if env_val:
-        return _parse_watcher_flag(env_val)
-    return False
+    return config_module.get("watch", False)
 
 
 _BOOL_TRUE = frozenset(("true", "1", "yes", "on"))

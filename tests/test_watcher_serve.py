@@ -59,16 +59,24 @@ class TestServeWatcherCliArgs:
 
     def test_watcher_flag_absent_is_none(self):
         from jcodemunch_mcp.server import main
+        from jcodemunch_mcp.config import get as real_get
         captured = []
 
         def capturing_run(coro, *a, **kw):
             captured.append(coro)
 
+        # Mock config to ensure watch=False so test is isolated from config file
+        def mock_get(key, default=None):
+            if key == "watch":
+                return False
+            return real_get(key, default)
+
         with patch("jcodemunch_mcp.server.asyncio.run", side_effect=capturing_run):
-            try:
-                main(["serve"])
-            except SystemExit:
-                pass
+            with patch("jcodemunch_mcp.server.config_module.get", side_effect=mock_get):
+                try:
+                    main(["serve"])
+                except SystemExit:
+                    pass
 
         # The coroutine should be run_stdio_server (no wrapper)
         assert len(captured) == 1
@@ -338,18 +346,29 @@ class TestLoggerHandlerCleanup:
 # ---------------------------------------------------------------------------
 
 class TestWatcherEnvVar:
-    """JCODEMUNCH_WATCH env var enables watcher when --watcher flag absent."""
+    """JCODEMUNCH_WATCH env var enables watcher when --watcher flag absent.
+
+    After the config-layering fix, env vars flow through config._apply_env_var_fallback
+    rather than being read directly in _get_watcher_enabled.  These tests mock
+    config_module.get to isolate _get_watcher_enabled from disk config state.
+    """
 
     def test_env_var_enables_watcher(self):
-        """JCODEMUNCH_WATCH=1 enables watcher when --watcher flag not present."""
+        """config.get('watch') == True (via env var fallback) enables watcher."""
         from jcodemunch_mcp.server import main
+        from jcodemunch_mcp.config import get as real_get
         captured = []
 
         def capturing_run(coro, *a, **kw):
             captured.append(coro)
 
-        with patch.dict(os.environ, {"JCODEMUNCH_WATCH": "1"}), \
-             patch("jcodemunch_mcp.server.asyncio.run", side_effect=capturing_run):
+        def mock_get(key, default=None):
+            if key == "watch":
+                return True  # simulates JCODEMUNCH_WATCH=1 applied through config system
+            return real_get(key, default)
+
+        with patch("jcodemunch_mcp.server.asyncio.run", side_effect=capturing_run), \
+             patch("jcodemunch_mcp.server.config_module.get", side_effect=mock_get):
             try:
                 main(["serve"])
             except SystemExit:
@@ -360,15 +379,21 @@ class TestWatcherEnvVar:
         captured[0].close()
 
     def test_flag_overrides_env_var(self):
-        """--watcher=false disables watcher even when JCODEMUNCH_WATCH=1."""
+        """--watcher=false disables watcher even when config returns watch=True."""
         from jcodemunch_mcp.server import main
+        from jcodemunch_mcp.config import get as real_get
         captured = []
 
         def capturing_run(coro, *a, **kw):
             captured.append(coro)
 
-        with patch.dict(os.environ, {"JCODEMUNCH_WATCH": "1"}), \
-             patch("jcodemunch_mcp.server.asyncio.run", side_effect=capturing_run):
+        def mock_get(key, default=None):
+            if key == "watch":
+                return True
+            return real_get(key, default)
+
+        with patch("jcodemunch_mcp.server.asyncio.run", side_effect=capturing_run), \
+             patch("jcodemunch_mcp.server.config_module.get", side_effect=mock_get):
             try:
                 main(["serve", "--watcher=false"])
             except SystemExit:
@@ -379,15 +404,21 @@ class TestWatcherEnvVar:
         captured[0].close()
 
     def test_env_var_false_disables(self):
-        """JCODEMUNCH_WATCH=0 does NOT enable watcher."""
+        """config.get('watch') == False (JCODEMUNCH_WATCH=0 with no explicit config) does not start watcher."""
         from jcodemunch_mcp.server import main
+        from jcodemunch_mcp.config import get as real_get
         captured = []
 
         def capturing_run(coro, *a, **kw):
             captured.append(coro)
 
-        with patch.dict(os.environ, {"JCODEMUNCH_WATCH": "0"}), \
-             patch("jcodemunch_mcp.server.asyncio.run", side_effect=capturing_run):
+        def mock_get(key, default=None):
+            if key == "watch":
+                return False  # simulates JCODEMUNCH_WATCH=0 / no config set
+            return real_get(key, default)
+
+        with patch("jcodemunch_mcp.server.asyncio.run", side_effect=capturing_run), \
+             patch("jcodemunch_mcp.server.config_module.get", side_effect=mock_get):
             try:
                 main(["serve"])
             except SystemExit:
@@ -395,6 +426,97 @@ class TestWatcherEnvVar:
 
         assert len(captured) == 1
         assert "watcher" not in captured[0].cr_code.co_name
+        captured[0].close()
+
+
+# ---------------------------------------------------------------------------
+# Task 5: Config "watch" key enables watcher
+# ---------------------------------------------------------------------------
+
+class TestWatcherConfig:
+    """Config file 'watch' key enables watcher when --watcher flag and env var absent."""
+
+    def test_config_watch_true_enables_watcher(self):
+        """config 'watch': true enables watcher when no flag/env var."""
+        from jcodemunch_mcp.server import main
+        from jcodemunch_mcp.config import get as real_get
+        captured = []
+
+        def capturing_run(coro, *a, **kw):
+            captured.append(coro)
+
+        def mock_get(key, default=None):
+            if key == "watch":
+                return True
+            return real_get(key, default)
+
+        with patch("jcodemunch_mcp.server.asyncio.run", side_effect=capturing_run), \
+             patch("jcodemunch_mcp.server.config_module.get", side_effect=mock_get):
+            try:
+                main(["serve"])
+            except SystemExit:
+                pass
+
+        assert len(captured) == 1
+        assert "watcher" in captured[0].cr_code.co_name
+        captured[0].close()
+
+    def test_flag_overrides_config_watch_true(self):
+        """--watcher=false disables watcher even when config 'watch': true."""
+        from jcodemunch_mcp.server import main
+        from jcodemunch_mcp.config import get as real_get
+        captured = []
+
+        def capturing_run(coro, *a, **kw):
+            captured.append(coro)
+
+        def mock_get(key, default=None):
+            if key == "watch":
+                return True
+            return real_get(key, default)
+
+        with patch("jcodemunch_mcp.server.asyncio.run", side_effect=capturing_run), \
+             patch("jcodemunch_mcp.server.config_module.get", side_effect=mock_get):
+            try:
+                main(["serve", "--watcher=false"])
+            except SystemExit:
+                pass
+
+        assert len(captured) == 1
+        assert "watcher" not in captured[0].cr_code.co_name
+        captured[0].close()
+
+    def test_config_watch_takes_priority_over_env_var(self):
+        """Config file 'watch': true wins over JCODEMUNCH_WATCH=0.
+
+        After removing the direct os.environ.get("JCODEMUNCH_WATCH") check from
+        _get_watcher_enabled, the env var is only a fallback for when the key is
+        absent from the config file (handled by config._apply_env_var_fallback).
+        An explicit config file setting always beats the env var.
+        """
+        from jcodemunch_mcp.server import main
+        from jcodemunch_mcp.config import get as real_get
+        captured = []
+
+        def capturing_run(coro, *a, **kw):
+            captured.append(coro)
+
+        def mock_get(key, default=None):
+            if key == "watch":
+                return True  # simulates config file explicitly set "watch": true
+            return real_get(key, default)
+
+        with patch.dict(os.environ, {"JCODEMUNCH_WATCH": "0"}), \
+             patch("jcodemunch_mcp.server.asyncio.run", side_effect=capturing_run), \
+             patch("jcodemunch_mcp.server.config_module.get", side_effect=mock_get):
+            try:
+                main(["serve"])
+            except SystemExit:
+                pass
+
+        assert len(captured) == 1
+        # Config file wins — watcher IS enabled despite JCODEMUNCH_WATCH=0
+        assert "watcher" in captured[0].cr_code.co_name
         captured[0].close()
 
 
