@@ -198,6 +198,12 @@ class TestConfigDefaults:
         assert DEFAULTS["summarizer_model"] == ""
         assert CONFIG_TYPES["summarizer_model"] is str
 
+    def test_default_use_ai_summaries(self):
+        """use_ai_summaries should default to 'auto'."""
+        from src.jcodemunch_mcp.config import DEFAULTS, CONFIG_TYPES
+        assert DEFAULTS["use_ai_summaries"] == "auto"
+        assert CONFIG_TYPES["use_ai_summaries"] == (bool, str)
+
 
 class TestConfigLoading:
     """Test config file loading."""
@@ -1272,7 +1278,10 @@ class TestConfigValidation:
             config_path = Path(tmpdir) / "config.jsonc"
             config_path.write_text('{"use_ai_summaries": "maybe"}')
             issues = validate_config(str(config_path))
-            assert any("type" in i.lower() or "invalid" in i.lower() for i in issues)
+            assert len(issues) == 1
+            assert "use_ai_summaries" in issues[0]
+            assert "'maybe'" in issues[0]
+            assert '"auto"' in issues[0]
 
     def test_validate_use_ai_summaries_string_yes_rejected(self):
         """"yes" should be rejected as invalid use_ai_summaries value."""
@@ -1284,7 +1293,10 @@ class TestConfigValidation:
             config_path = Path(tmpdir) / "config.jsonc"
             config_path.write_text('{"use_ai_summaries": "yes"}')
             issues = validate_config(str(config_path))
-            assert any("type" in i.lower() or "invalid" in i.lower() for i in issues)
+            assert len(issues) == 1
+            assert "use_ai_summaries" in issues[0]
+            assert "'yes'" in issues[0]
+            assert '"auto"' in issues[0]
 
 
 class TestServerConfigCheck:

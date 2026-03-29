@@ -855,12 +855,18 @@ def validate_config(config_path: str) -> list[str]:
     for key, value in loaded.items():
         if key in CONFIG_TYPES:
             if not _validate_type(key, value, CONFIG_TYPES[key]):
-                expected = CONFIG_TYPES[key]
-                type_name = getattr(expected, "__name__", str(expected))
-                issues.append(
-                    f"Config key '{key}' has invalid type: "
-                    f"expected {type_name}, got {type(value).__name__}"
-                )
+                if key == "use_ai_summaries":
+                    issues.append(
+                        f"Config key 'use_ai_summaries' has invalid value {value!r}: "
+                        f'expected one of: "auto", "true", "false" (or boolean true/false)'
+                    )
+                else:
+                    expected = CONFIG_TYPES[key]
+                    type_name = getattr(expected, "__name__", str(expected))
+                    issues.append(
+                        f"Config key '{key}' has invalid type: "
+                        f"expected {type_name}, got {type(value).__name__}"
+                    )
             elif key == "trusted_folders":
                 for entry in value:
                     if not Path(entry).expanduser().is_absolute():
@@ -1104,6 +1110,8 @@ def generate_template() -> str:
   // "summarizer_concurrency": 4,
   //   Number of parallel threads for AI summarization.
   //   Higher = faster indexing but more API calls.
+
+  // === AI Summarizer ===
   // Controls whether AI is used to generate symbol summaries during indexing.
   //   "auto"  — auto-detect provider from API key env vars (default behavior)
   //   true    — use the summarizer_provider and summarizer_model values below
