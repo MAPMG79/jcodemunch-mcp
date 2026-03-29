@@ -50,6 +50,7 @@ ENV_VAR_MAPPING = {
     "JCODEMUNCH_WATCH_PATHS": "watch_paths",
     "JCODEMUNCH_FRESHNESS_MODE": "freshness_mode",
     "JCODEMUNCH_SUMMARIZER_PROVIDER": "summarizer_provider",
+    "JCODEMUNCH_SUMMARIZER_MODEL": "summarizer_model",
     "JCODEMUNCH_EMBED_MODEL": "embed_model",
     "JCODEMUNCH_CLAUDE_POLL_INTERVAL": "claude_poll_interval",
     "JCODEMUNCH_LOG_LEVEL": "log_level",
@@ -248,7 +249,7 @@ def apply_adaptive_languages(source_root: str, detected: set[str]) -> bool:
     return True
 
 DEFAULTS = {
-    "use_ai_summaries": True,
+    "use_ai_summaries": "auto",
     "trusted_folders": [],
     "trusted_folders_whitelist_mode": True,
     "max_folder_files": 2000,
@@ -280,6 +281,7 @@ DEFAULTS = {
     "freshness_mode": "relaxed",
     "strict_timeout_ms": 500,
     "summarizer_provider": "",
+    "summarizer_model": "",
     "embed_model": "",
     "claude_poll_interval": 5.0,
     "log_level": "WARNING",
@@ -293,7 +295,7 @@ DEFAULTS = {
 }
 
 CONFIG_TYPES = {
-    "use_ai_summaries": bool,
+    "use_ai_summaries": (bool, str),
     "trusted_folders": list,
     "trusted_folders_whitelist_mode": bool,
     "max_folder_files": int,
@@ -325,6 +327,7 @@ CONFIG_TYPES = {
     "freshness_mode": str,
     "strict_timeout_ms": int,
     "summarizer_provider": str,
+    "summarizer_model": str,
     "embed_model": str,
     "claude_poll_interval": float,
     "log_level": str,
@@ -443,6 +446,12 @@ def _validate_type(key: str, value: Any, expected_type: type | tuple) -> bool:
     """Validate value against expected type."""
     if key == "trusted_folders":
         return isinstance(value, list) and all(isinstance(item, str) for item in value)
+    if key == "use_ai_summaries":
+        if isinstance(value, bool):
+            return True
+        if isinstance(value, str):
+            return value.lower() in {"true", "false", "auto"}
+        return False
     if isinstance(expected_type, tuple):
         return isinstance(value, expected_type)
     return isinstance(value, expected_type)
@@ -934,10 +943,6 @@ def generate_template() -> str:
   "version": "{__version__}",
 
   // === Indexing ===
-  // "use_ai_summaries": true,
-  //   Enable AI-generated symbol summaries (requires ANTHROPIC_API_KEY or GOOGLE_API_KEY).
-  //   Set false/0/no/off to disable globally.
-
   // "trusted_folders": [],
   //   Directories allowed for indexing when whitelist_mode is true.
   //   In whitelist mode (default), only these folders can be indexed.
@@ -1099,10 +1104,22 @@ def generate_template() -> str:
   // "summarizer_concurrency": 4,
   //   Number of parallel threads for AI summarization.
   //   Higher = faster indexing but more API calls.
+  // Controls whether AI is used to generate symbol summaries during indexing.
+  //   "auto"  — auto-detect provider from API key env vars (default behavior)
+  //   true    — use the summarizer_provider and summarizer_model values below
+  //   false   — disable AI summarization entirely (signature fallback only)
+  // "use_ai_summaries": "auto",
+
+  // AI summarizer provider to use when use_ai_summaries is true.
+  // Valid values: "anthropic", "gemini", "openai", "minimax", "glm", "none"
+  // Leave empty ("") to auto-detect from available API keys.
   // "summarizer_provider": "",
-  //   Force a specific AI summarizer provider. Auto-detected from API keys when empty.
-  //   Valid values: "anthropic", "gemini", "openai", "minimax", "glm", "none".
-  //   "none" disables AI summaries regardless of API keys set.
+
+  // Model name to use for the selected summarizer provider.
+  // Leave empty ("") to use the provider's default model.
+  // Examples: "claude-haiku-4-5-20251001" (anthropic), "gemini-2.5-flash-lite" (gemini),
+  //           "gpt-4o-mini" (openai), "minimax-m2.7" (minimax), "glm-5" (glm)
+  // "summarizer_model": "",
   // "embed_model": "",
   //   Sentence-transformers model name for local (free) semantic embeddings.
   //   Example: "all-MiniLM-L6-v2". Requires sentence-transformers package.

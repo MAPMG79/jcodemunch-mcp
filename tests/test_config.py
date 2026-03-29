@@ -218,7 +218,7 @@ class TestConfigLoading:
 
         # And defaults should be available
         assert get("max_folder_files") == 2000
-        assert get("use_ai_summaries") is True
+        assert get("use_ai_summaries") == "auto"
 
     def test_missing_file_uses_defaults(self, monkeypatch):
         """Should use defaults when config file doesn't exist."""
@@ -235,7 +235,7 @@ class TestConfigLoading:
             load_config(str(Path(tmpdir) / "nonexistent"))
 
             assert get("max_folder_files") == 2000
-            assert get("use_ai_summaries") is True
+            assert get("use_ai_summaries") == "auto"
 
     def test_loads_valid_config(self, monkeypatch):
         """Should load valid JSONC config."""
@@ -427,7 +427,7 @@ class TestProjectConfig:
             repo_key = str(project_root.resolve())
             assert get("max_folder_files", repo=repo_key) == 5000
             # Non-overridden values should come from global
-            assert get("use_ai_summaries", repo=repo_key) is True
+            assert get("use_ai_summaries", repo=repo_key) is True  # set explicitly in global config
 
 
 class TestConfigGetters:
@@ -1552,7 +1552,7 @@ class TestConfigTypeValidation:
     """Test config type validation for all config keys."""
 
     def test_bool_type_mismatch_string_true(self):
-        """String 'true' should be rejected for bool type."""
+        """String 'true' should be rejected for pure bool type."""
         from src.jcodemunch_mcp.config import load_config, get, _GLOBAL_CONFIG
         import logging
 
@@ -1560,11 +1560,11 @@ class TestConfigTypeValidation:
 
         with tempfile.TemporaryDirectory() as tmpdir:
             config_path = Path(tmpdir) / "config.jsonc"
-            config_path.write_text('{"use_ai_summaries": "true"}')  # String, not bool
+            config_path.write_text('{"context_providers": "true"}')  # String, not bool
 
             load_config(tmpdir)
             # Should fall back to default (True)
-            assert get("use_ai_summaries") is True
+            assert get("context_providers") is True
 
     def test_int_type_mismatch_float(self):
         """Float should be rejected for int type."""
@@ -1830,7 +1830,7 @@ class TestAllConfigKeys:
         from src.jcodemunch_mcp.config import load_config, get, _GLOBAL_CONFIG
 
         bool_keys = [
-            "use_ai_summaries", "context_providers", "redact_source_root",
+            "context_providers", "redact_source_root",
             "share_savings", "allow_remote_summarizer", "watch"
         ]
 
