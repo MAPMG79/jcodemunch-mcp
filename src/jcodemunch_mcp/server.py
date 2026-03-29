@@ -285,7 +285,7 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="get_file_tree",
-            description="Get the file tree of an indexed repository, optionally filtered by path prefix.",
+            description="Get the file tree of an indexed repository, optionally filtered by path prefix. Results are capped at max_files (default 500) to prevent token overflow; use path_prefix to scope large trees.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -302,6 +302,11 @@ async def list_tools() -> list[Tool]:
                         "type": "boolean",
                         "description": "Include file-level summaries in the tree nodes",
                         "default": False
+                    },
+                    "max_files": {
+                        "type": "integer",
+                        "description": "Maximum number of files to return (default 500). When truncated, response includes total_file_count and a hint to use path_prefix.",
+                        "default": 500
                     }
                 },
                 "required": ["repo"]
@@ -435,6 +440,42 @@ async def list_tools() -> list[Tool]:
                     "debug": {
                         "type": "boolean",
                         "description": "When true, each result includes a score_breakdown showing per-field scoring contributions (name_exact, name_contains, name_word_overlap, signature_phrase, signature_word_overlap, summary_phrase, summary_word_overlap, keywords, docstring_word_overlap). Also adds candidates_scored to _meta.",
+                        "default": False
+                    },
+                    "fuzzy": {
+                        "type": "boolean",
+                        "description": "Enable fuzzy matching. When true, uses trigram overlap + Levenshtein distance as fallback when BM25 scores are low. Fuzzy results include match_type, fuzzy_similarity, and edit_distance fields.",
+                        "default": False
+                    },
+                    "fuzzy_threshold": {
+                        "type": "number",
+                        "description": "Minimum Jaccard trigram similarity (0.0–1.0) for fuzzy candidates. Lower values surface more candidates. Default 0.4.",
+                        "default": 0.4
+                    },
+                    "max_edit_distance": {
+                        "type": "integer",
+                        "description": "Maximum Levenshtein distance for direct name matching (catches typos). Default 2.",
+                        "default": 2
+                    },
+                    "sort_by": {
+                        "type": "string",
+                        "enum": ["relevance", "centrality", "combined"],
+                        "description": "Ranking strategy. 'relevance' (default) = BM25 text match. 'centrality' = filter by query, rank by PageRank. 'combined' = BM25 + PageRank weighted.",
+                        "default": "relevance"
+                    },
+                    "semantic": {
+                        "type": "boolean",
+                        "description": "Enable semantic (embedding-based) search. Requires an embedding provider: JCODEMUNCH_EMBED_MODEL (sentence-transformers), GOOGLE_API_KEY+GOOGLE_EMBED_MODEL (Gemini), or OPENAI_API_KEY+OPENAI_EMBED_MODEL (OpenAI). When false (default) there is zero performance impact.",
+                        "default": False
+                    },
+                    "semantic_weight": {
+                        "type": "number",
+                        "description": "Weight for semantic score in hybrid BM25+embedding ranking (0.0–1.0). BM25 receives 1-weight. Default 0.5. Set to 0.0 for identical results to pure BM25; set to 1.0 for pure semantic.",
+                        "default": 0.5
+                    },
+                    "semantic_only": {
+                        "type": "boolean",
+                        "description": "Skip BM25 entirely and rank solely by embedding cosine similarity. Implies semantic=true.",
                         "default": False
                     }
                 },
@@ -587,7 +628,11 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="get_context_bundle",
-            description="Get full source + imports for one or more symbols in one call. Multi-symbol bundles deduplicate shared imports. Set include_callers=true to also list files that import the symbol's file.",
+            description=(
+                "Get full source + imports for one or more symbols in one call. "
+                "Multi-symbol bundles deduplicate shared imports. "
+                "Set token_budget to cap response size; use budget_strategy to control what's kept."
+            ),
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -614,6 +659,25 @@ async def list_tools() -> list[Tool]:
                         "description": "'json' (default) or 'markdown' — markdown renders a paste-ready document with imports, docstrings, and source blocks.",
                         "enum": ["json", "markdown"],
                         "default": "json"
+                    },
+                    "token_budget": {
+                        "type": "integer",
+                        "description": "Max tokens to return. When set, symbols are ranked and trimmed to fit. Uses budget_strategy to prioritize."
+                    },
+                    "budget_strategy": {
+                        "type": "string",
+                        "enum": ["most_relevant", "core_first", "compact"],
+                        "description": (
+                            "'most_relevant' (default) ranks by file centrality (import in-degree). "
+                            "'core_first' keeps the primary symbol first, ranks rest by centrality. "
+                            "'compact' strips source bodies — returns signatures only."
+                        ),
+                        "default": "most_relevant"
+                    },
+                    "include_budget_report": {
+                        "type": "boolean",
+                        "description": "When true, include a 'budget_report' field showing tokens used, symbols included/excluded, and strategy applied.",
+                        "default": False
                     }
                 },
                 "required": ["repo"]
@@ -722,29 +786,184 @@ async def list_tools() -> list[Tool]:
                         "type": "integer",
                         "description": "Import hops to traverse (1 = direct importers only, max 3). Default 1.",
                         "default": 1
+                    },
+                    "include_depth_scores": {
+                        "type": "boolean",
+                        "description": "When true, adds impact_by_depth (files grouped by hop distance) and per-depth risk scores. overall_risk_score and direct_dependents_count are always included. Default false.",
+                        "default": False
                     }
                 },
                 "required": ["repo", "symbol"]
             }
         ),
         Tool(
-            name="wait_for_fresh",
-            description="Wait for a repo's in-progress watcher reindex to finish, then return the fresh result. In strict freshness mode, blocks up to timeout_ms. In relaxed mode (default), returns immediately.",
+            name="get_symbol_importance",
+            description=(
+                "Return the most architecturally important symbols in a repo, ranked by "
+                "PageRank or in-degree centrality on the import graph. Useful for "
+                "orientation: surfaces the symbols that most of the codebase depends on. "
+                "New tool: use after indexing to understand repo architecture at a glance."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "repo": {"type": "string", "description": "Repository identifier (owner/repo or just repo name)"},
+                    "top_n": {"type": "integer", "description": "Number of top symbols to return (default 20, max 200)", "default": 20},
+                    "algorithm": {
+                        "type": "string",
+                        "enum": ["pagerank", "degree"],
+                        "description": "'pagerank' (default) = full PageRank on import graph; 'degree' = simple in-degree count (faster).",
+                        "default": "pagerank",
+                    },
+                    "scope": {"type": "string", "description": "Limit to a subdirectory prefix (e.g. 'src/core')"},
+                },
+                "required": ["repo"],
+            },
+        ),
+        Tool(
+            name="find_dead_code",
+            description=(
+                "Find dead code — files and symbols with zero importers and no entry-point role. "
+                "Uses the import graph to identify unreachable code. Returns confidence scores "
+                "(1.0 = provably unreachable, 0.7 = all importers are themselves dead). "
+                "Set granularity='file' for file-level results only."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "repo": {"type": "string", "description": "Repository identifier (owner/repo or just repo name)"},
+                    "granularity": {
+                        "type": "string",
+                        "enum": ["symbol", "file"],
+                        "description": "'symbol' (default) returns dead symbols; 'file' returns dead files only.",
+                        "default": "symbol",
+                    },
+                    "min_confidence": {
+                        "type": "number",
+                        "description": "Minimum confidence threshold 0.0–1.0. Default 0.8. Use 1.0 for provably unreachable only.",
+                        "default": 0.8,
+                    },
+                    "include_tests": {
+                        "type": "boolean",
+                        "description": "Treat test files as live roots (default false — test files are excluded from dead code candidates).",
+                        "default": False,
+                    },
+                    "entry_point_patterns": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Additional glob patterns to treat as live roots (e.g. 'cli/*.py', 'scripts/*').",
+                    },
+                },
+                "required": ["repo"],
+            },
+        ),
+        Tool(
+            name="get_ranked_context",
+            description=(
+                "Assemble the best-fit context for a query within a token budget. "
+                "Ranks all symbols by relevance (BM25) and/or centrality (PageRank), "
+                "loads source for the top candidates, and packs greedily until token_budget is exhausted. "
+                "Use when you want 'the best N tokens of context for this task' without specifying exact symbols."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "repo": {"type": "string", "description": "Repository identifier (owner/repo or just repo name)"},
+                    "query": {"type": "string", "description": "Natural language or identifier describing the task (max 500 chars)"},
+                    "token_budget": {
+                        "type": "integer",
+                        "description": "Hard cap on returned tokens (default 4000).",
+                        "default": 4000,
+                    },
+                    "strategy": {
+                        "type": "string",
+                        "enum": ["combined", "bm25", "centrality"],
+                        "description": (
+                            "'combined' (default) = BM25 + PageRank weighted sum. "
+                            "'bm25' = pure text relevance. "
+                            "'centrality' = PageRank only, filtered to query-matching symbols."
+                        ),
+                        "default": "combined",
+                    },
+                    "include_kinds": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Optional list of symbol kinds to restrict results (e.g. ['class', 'function']).",
+                    },
+                    "scope": {
+                        "type": "string",
+                        "description": "Optional glob pattern to limit search to a subdirectory (e.g. 'src/core/*').",
+                    },
+                },
+                "required": ["repo", "query"],
+            },
+        ),
+        Tool(
+            name="get_changed_symbols",
+            description=(
+                "Map a git diff to affected symbols: given two commits, returns which symbols "
+                "were added, removed, modified, or renamed. Useful after merging a PR to answer "
+                "'what actually changed?' for code review or regression triage. "
+                "Requires a locally indexed repo (index_folder). "
+                "Defaults to comparing current HEAD against the SHA stored at index time."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "repo": {"type": "string", "description": "Repository identifier — must be locally indexed with index_folder"},
+                    "since_sha": {
+                        "type": "string",
+                        "description": "Compare from this git SHA or ref. Defaults to the SHA stored at index time.",
+                    },
+                    "until_sha": {
+                        "type": "string",
+                        "description": "Compare to this git SHA or ref (default 'HEAD').",
+                        "default": "HEAD",
+                    },
+                    "include_blast_radius": {
+                        "type": "boolean",
+                        "description": "Also return downstream importers (blast radius) for each changed symbol (default false).",
+                        "default": False,
+                    },
+                    "max_blast_depth": {
+                        "type": "integer",
+                        "description": "Hop limit when include_blast_radius=true (default 3, max 5).",
+                        "default": 3,
+                    },
+                },
+                "required": ["repo"],
+            },
+        ),
+        Tool(
+            name="embed_repo",
+            description=(
+                "Precompute and cache symbol embeddings for semantic search. "
+                "Optional warm-up: search_symbols with semantic=true lazily embeds missing "
+                "symbols on first use, but embed_repo warms the cache upfront so the first "
+                "semantic query returns immediately. "
+                "Requires an embedding provider (JCODEMUNCH_EMBED_MODEL, "
+                "GOOGLE_API_KEY+GOOGLE_EMBED_MODEL, or OPENAI_API_KEY+OPENAI_EMBED_MODEL)."
+            ),
             inputSchema={
                 "type": "object",
                 "properties": {
                     "repo": {
                         "type": "string",
-                        "description": "Repository identifier (owner/repo or just repo name)"
+                        "description": "Repository identifier (owner/repo or just repo name)",
                     },
-                    "timeout_ms": {
+                    "batch_size": {
                         "type": "integer",
-                        "description": "Maximum time to wait in milliseconds (default 500)",
-                        "default": 500
-                    }
+                        "description": "Symbols per embedding batch (default 50).",
+                        "default": 50,
+                    },
+                    "force": {
+                        "type": "boolean",
+                        "description": "Recompute all embeddings even if they already exist (default false).",
+                        "default": False,
+                    },
                 },
-                "required": ["repo"]
-            }
+                "required": ["repo"],
+            },
         ),
     ]
     # Filter out disabled tools
@@ -902,6 +1121,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                     repo=arguments["repo"],
                     path_prefix=arguments.get("path_prefix", ""),
                     include_summaries=arguments.get("include_summaries", False),
+                    max_files=arguments.get("max_files"),
                     storage_path=storage_path,
                 )
             )
@@ -955,6 +1175,13 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                         token_budget=arguments.get("token_budget"),
                         detail_level=arguments.get("detail_level", "standard"),
                         debug=arguments.get("debug", False),
+                        fuzzy=arguments.get("fuzzy", False),
+                        fuzzy_threshold=arguments.get("fuzzy_threshold", 0.4),
+                        max_edit_distance=arguments.get("max_edit_distance", 2),
+                        sort_by=arguments.get("sort_by", "relevance"),
+                        semantic=arguments.get("semantic", False),
+                        semantic_weight=arguments.get("semantic_weight", 0.5),
+                        semantic_only=arguments.get("semantic_only", False),
                         storage_path=storage_path,
                     )
                 )
@@ -1041,6 +1268,22 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                     symbol_ids=arguments.get("symbol_ids"),
                     include_callers=arguments.get("include_callers", False),
                     output_format=arguments.get("output_format", "json"),
+                    token_budget=arguments.get("token_budget"),
+                    budget_strategy=arguments.get("budget_strategy", "most_relevant"),
+                    include_budget_report=arguments.get("include_budget_report", False),
+                    storage_path=storage_path,
+                )
+            )
+        elif name == "get_ranked_context":
+            result = await asyncio.to_thread(
+                functools.partial(
+                    get_ranked_context,
+                    repo=arguments["repo"],
+                    query=arguments["query"],
+                    token_budget=arguments.get("token_budget", 4000),
+                    strategy=arguments.get("strategy", "combined"),
+                    include_kinds=arguments.get("include_kinds"),
+                    scope=arguments.get("scope"),
                     storage_path=storage_path,
                 )
             )
@@ -1069,6 +1312,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                     repo=arguments["repo"],
                     symbol=arguments["symbol"],
                     depth=arguments.get("depth", 1),
+                    include_depth_scores=arguments.get("include_depth_scores", False),
                     storage_path=storage_path,
                 )
             )
@@ -1108,11 +1352,50 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                     storage_path=storage_path,
                 )
             )
-        elif name == "wait_for_fresh":
+        elif name == "get_symbol_importance":
             result = await asyncio.to_thread(
-                wait_for_fresh_result,
-                repo=arguments["repo"],
-                timeout_ms=arguments.get("timeout_ms", 500),
+                functools.partial(
+                    get_symbol_importance,
+                    repo=arguments["repo"],
+                    top_n=arguments.get("top_n", 20),
+                    algorithm=arguments.get("algorithm", "pagerank"),
+                    scope=arguments.get("scope"),
+                    storage_path=storage_path,
+                )
+            )
+        elif name == "find_dead_code":
+            result = await asyncio.to_thread(
+                functools.partial(
+                    find_dead_code,
+                    repo=arguments["repo"],
+                    granularity=arguments.get("granularity", "symbol"),
+                    min_confidence=arguments.get("min_confidence", 0.8),
+                    include_tests=arguments.get("include_tests", False),
+                    entry_point_patterns=arguments.get("entry_point_patterns"),
+                    storage_path=storage_path,
+                )
+            )
+        elif name == "get_changed_symbols":
+            result = await asyncio.to_thread(
+                functools.partial(
+                    get_changed_symbols,
+                    repo=arguments["repo"],
+                    since_sha=arguments.get("since_sha"),
+                    until_sha=arguments.get("until_sha", "HEAD"),
+                    include_blast_radius=arguments.get("include_blast_radius", False),
+                    max_blast_depth=arguments.get("max_blast_depth", 3),
+                    storage_path=storage_path,
+                )
+            )
+        elif name == "embed_repo":
+            result = await asyncio.to_thread(
+                functools.partial(
+                    embed_repo,
+                    repo=arguments["repo"],
+                    batch_size=arguments.get("batch_size", 50),
+                    force=arguments.get("force", False),
+                    storage_path=storage_path,
+                )
             )
         else:
             result = {"error": f"Unknown tool: {name}"}
@@ -1121,49 +1404,15 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             meta_fields = config_module.get("meta_fields")
             if meta_fields == [] or arguments.get("suppress_meta"):
                 result.pop("_meta", None)
-            elif meta_fields is None:
-                _meta = result.setdefault("_meta", {})
-                # Inject staleness fields for per-repo tools
-                repo_arg = arguments.get("repo")
-                if repo_arg:
-                    # get_reindex_status returns spec fields: index_stale, reindex_in_progress,
-                    # stale_since_ms, and conditionally reindex_error / reindex_failures.
-                    _meta.update(get_reindex_status(repo_arg))
-                elif name not in ("list_repos", "resolve_repo", "get_session_stats", "index_repo", "index_folder"):
-                    # For non-repo tools, report global reindex activity
-                    from .reindex_state import is_any_reindex_in_progress
-                    any_in_progress = is_any_reindex_in_progress()
-                    _meta["index_stale"] = any_in_progress
-                    _meta["reindex_in_progress"] = any_in_progress
-                    _meta["stale_since_ms"] = None
             elif isinstance(meta_fields, list):
-                # Partial field inclusion - build _meta with only specified fields
-                # Save existing _meta (may contain tool-generated fields like timing_ms, tokens_saved)
+                # Partial field inclusion — keep only the fields listed in meta_fields,
+                # preserving tool-generated fields (timing_ms, tokens_saved, etc.)
                 existing_meta = result.pop("_meta", {})
                 _meta: dict[str, Any] = {}
                 if "powered_by" in meta_fields:
                     _meta["powered_by"] = "jcodemunch-mcp by jgravelle · https://github.com/jgravelle/jcodemunch-mcp"
-                repo_arg = arguments.get("repo")
-                if repo_arg:
-                    status = get_reindex_status(repo_arg)
-                    for field in meta_fields:
-                        if field in status:
-                            _meta[field] = status[field]
-                        elif field in existing_meta:
-                            _meta[field] = existing_meta[field]
-                elif name not in ("list_repos", "get_session_stats", "index_repo", "index_folder"):
-                    from .reindex_state import is_any_reindex_in_progress
-                    any_in_progress = is_any_reindex_in_progress()
-                    if "index_stale" in meta_fields:
-                        _meta["index_stale"] = any_in_progress
-                    if "reindex_in_progress" in meta_fields:
-                        _meta["reindex_in_progress"] = any_in_progress
-                    if "stale_since_ms" in meta_fields:
-                        _meta["stale_since_ms"] = None
-                # Preserve tool-generated fields (timing_ms, tokens_saved, candidates_scored)
-                # This runs for ALL tools, including list_repos, get_session_stats, etc.
                 for field in meta_fields:
-                    if field not in _meta and field in existing_meta:
+                    if field in existing_meta:
                         _meta[field] = existing_meta[field]
                 if _meta:
                     result["_meta"] = _meta
@@ -1643,6 +1892,8 @@ def _run_config(check: bool = False, init: bool = False) -> None:
         "env" if not provider_d else "default",
     )
 
+    anthropic_key = os.environ.get("ANTHROPIC_API_KEY", "")
+    google_key = os.environ.get("GOOGLE_API_KEY", "")
     openai_base = os.environ.get("OPENAI_API_BASE", "")
     provider_name = get_provider_name()
 
@@ -1756,26 +2007,26 @@ def _run_config(check: bool = False, init: bool = False) -> None:
 
         # AI provider package installed?
         if use_ai:
-            if anthropic_key:
+            if provider_name == "anthropic":
                 try:
                     import anthropic as _a
                     print(f"  {green(CHECK)} anthropic package installed (v{_a.__version__})")
                 except ImportError:
                     print(f"  {red(CROSS)} anthropic not installed — run: pip install \"jcodemunch-mcp[anthropic]\"")
                     issues.append("anthropic")
-            elif google_key:
+            elif provider_name == "gemini":
                 try:
                     import google.generativeai  # noqa: F401
                     print(f"  {green(CHECK)} google-generativeai package installed")
                 except ImportError:
                     print(f"  {red(CROSS)} google-generativeai not installed — run: pip install \"jcodemunch-mcp[gemini]\"")
                     issues.append("gemini")
-            elif openai_base:
+            elif provider_name in {"openai", "minimax", "glm"}:
                 try:
                     import httpx  # noqa: F401
-                    print(f"  {green(CHECK)} httpx available for local LLM requests")
+                    print(f"  {green(CHECK)} httpx available for OpenAI-compatible requests")
                 except ImportError:
-                    print(f"  {red(CROSS)} httpx not installed (required for local LLM)")
+                    print(f"  {red(CROSS)} httpx not installed (required for OpenAI-compatible summarizer)")
                     issues.append("httpx")
             else:
                 print(f"  {yellow(WARN)} no AI provider configured — signature fallback will be used")
@@ -2145,19 +2396,46 @@ def main(argv: Optional[list[str]] = None):
                 )
                 sys.exit(1)
 
-            watcher_paths = args.watcher_path or [os.getcwd()]
+            # Watcher params: CLI flag > config > default
+            cfg_paths = config_module.get("watch_paths", [])
+            if args.watcher_path is not None:
+                watcher_paths = args.watcher_path
+            elif cfg_paths:
+                watcher_paths = cfg_paths
+            else:
+                watcher_paths = [os.getcwd()]
+
             use_ai = not args.watcher_no_ai_summaries and _default_use_ai_summaries()
+
             watcher_kwargs = dict(
                 paths=watcher_paths,
-                debounce_ms=args.watcher_debounce,
+                debounce_ms=(
+                    args.watcher_debounce
+                    if args.watcher_debounce is not None
+                    else config_module.get("watch_debounce_ms", 2000)
+                ),
                 use_ai_summaries=use_ai,
                 storage_path=os.environ.get("CODE_INDEX_PATH"),
-                extra_ignore_patterns=args.watcher_extra_ignore,
-                follow_symlinks=args.watcher_follow_symlinks,
-                idle_timeout_minutes=args.watcher_idle_timeout,
+                extra_ignore_patterns=(
+                    args.watcher_extra_ignore
+                    if args.watcher_extra_ignore is not None
+                    else config_module.get("watch_extra_ignore", []) or None
+                ),
+                follow_symlinks=(
+                    args.watcher_follow_symlinks
+                    or config_module.get("watch_follow_symlinks", False)
+                ),
+                idle_timeout_minutes=(
+                    args.watcher_idle_timeout
+                    if args.watcher_idle_timeout is not None
+                    else config_module.get("watch_idle_timeout", None)
+                ),
             )
 
-            log_path = getattr(args, "watcher_log", None)
+            log_path = (
+                getattr(args, "watcher_log", None)
+                or config_module.get("watch_log", None)
+            )
 
             try:
                 if args.transport == "sse":
