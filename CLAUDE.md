@@ -1,9 +1,9 @@
 # jcodemunch-mcp — Project Brief
 
 ## Current State
-- **Version:** 1.12.7 (published to PyPI)
+- **Version:** 1.12.9 (published to PyPI)
 - **INDEX_VERSION:** 6
-- **Tests:** 1332 passed, 7 skipped
+- **Tests:** 1397 passed, 7 skipped
 - **Python:** >=3.10
 
 ## Key Files
@@ -30,6 +30,7 @@ src/jcodemunch_mcp/
     resolve_repo.py    # O(1) path→repo-ID lookup
     find_importers.py  # Files that import a given file (import graph)
     find_references.py # Files that reference a given identifier
+    test_summarizer.py # Diagnostic tool: probe AI summarizer, report status (disabled by default)
 ```
 
 ## CLI Subcommands

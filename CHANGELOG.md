@@ -4,6 +4,23 @@ All notable changes to jcodemunch-mcp are documented here.
 
 ## [Unreleased]
 
+## [1.12.9] - 2026-03-29
+
+### Added
+- **Tri-state `use_ai_summaries`** (PR #186 — contributed by MariusAdrian88) — Config key and `JCODEMUNCH_USE_AI_SUMMARIES` env var now accept three values: `"auto"` (new default; auto-detect provider from API keys, identical to previous `true`), `true` (use explicit `summarizer_provider` + `summarizer_model` from config), `false` (disable AI summarization entirely). Existing boolean `true`/`false` configs are fully backward-compatible.
+- **`summarizer_model` config key** — Override the default model for any provider via config or `JCODEMUNCH_SUMMARIZER_MODEL` env var. Priority: config key > provider-specific env var (`ANTHROPIC_MODEL`, `GOOGLE_MODEL`, etc.) > hardcoded default. Applies to all providers.
+- **`summarizer_max_failures` config key** — Circuit breaker threshold (default 3). After this many consecutive batch failures the summarizer stops calling the API and falls back to signature summaries for all remaining symbols. A successful batch resets the counter. Set 0 to disable. Thread-safe (`threading.Lock`). Configurable via `JCODEMUNCH_SUMMARIZER_MAX_FAILURES`.
+- **OpenRouter provider** — New provider via `OPENROUTER_API_KEY` using the OpenAI-compatible API at `openrouter.ai/api/v1`. Default model: `meta-llama/llama-3.3-70b-instruct:free` (zero cost). Auto-detect priority: last in chain (after GLM-5). Explicit selection: `summarizer_provider: "openrouter"` or `JCODEMUNCH_SUMMARIZER_PROVIDER=openrouter`. `jcodemunch-mcp config` now shows active OpenRouter section.
+- **`test_summarizer` diagnostic tool** — Sends a probe request to the configured AI summarizer and reports status: `ok`, `disabled`, `no_provider`, `misconfigured`, `fallback`, `timeout`, or `error`. Disabled by default (remove from `disabled_tools` in config to enable). Optional `timeout_ms` parameter (default 15000).
+- **`strict_timeout_ms` config key** — Configures the maximum milliseconds to block in `freshness_mode: strict` before proceeding with a stale index (previously hardcoded at 500ms). Default: 500.
+- **`embed_model` config key** — Promotes `JCODEMUNCH_EMBED_MODEL` env var to a config file setting. Configures the sentence-transformers model for local semantic embeddings. Config key takes priority over env var.
+- **`summarizer_provider` config key** — Promotes `JCODEMUNCH_SUMMARIZER_PROVIDER` env var to a config file setting. Takes priority over env var.
+- **60+ new tests** (1397 total, 7 skipped).
+
+### Fixed
+- **`languages_adaptive` config key** (PR #185 — contributed by MariusAdrian88) — New boolean config key that enables automatic language detection based on files actually found in the indexed folder, overriding the `languages` allowlist for that run. Useful when indexing polyglot repos without maintaining an explicit language list.
+- **`meta_fields` default changed to `[]`** (PR #185) — Previously defaulted to `null` (all meta fields included); now defaults to `[]` (no `_meta` block) for token-efficient responses. Set to `null` in config to restore all meta fields.
+
 ## [1.12.7] - 2026-03-29
 
 ### Added
