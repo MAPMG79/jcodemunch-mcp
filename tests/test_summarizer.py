@@ -323,7 +323,7 @@ def test_openai_summarizer_with_mock_client():
         "os.environ",
         {"OPENAI_API_BASE": "http://localhost:11434/v1", "OPENAI_MODEL": "qwen3-coder"},
         clear=True,
-    ):
+    ), patch.object(OpenAIBatchSummarizer, "_init_client"):
         summarizer = OpenAIBatchSummarizer()
         summarizer.client = mock_client
 
@@ -589,11 +589,12 @@ def test_openai_summarizer_explicit_openai_provider_uses_default_api_base():
     ):
         try:
             _cfg_module._GLOBAL_CONFIG["allow_remote_summarizer"] = True
-            summarizer = OpenAIBatchSummarizer(
-                model="gpt-4o-mini",
-                api_base="https://api.openai.com/v1",
-                api_key="sk-test",
-            )
+            with patch.object(OpenAIBatchSummarizer, "_init_client"):
+                summarizer = OpenAIBatchSummarizer(
+                    model="gpt-4o-mini",
+                    api_base="https://api.openai.com/v1",
+                    api_key="sk-test",
+                )
             summarizer.client = mock_client
         finally:
             if _orig is _sentinel:
@@ -643,11 +644,12 @@ def test_openai_summarizer_minimax_provider_defaults():
     ):
         try:
             _cfg_module._GLOBAL_CONFIG["allow_remote_summarizer"] = True
-            summarizer = OpenAIBatchSummarizer(
-                model="minimax-m2.7",
-                api_base="https://api.minimax.io/v1",
-                api_key="test-key",
-            )
+            with patch.object(OpenAIBatchSummarizer, "_init_client"):
+                summarizer = OpenAIBatchSummarizer(
+                    model="minimax-m2.7",
+                    api_base="https://api.minimax.io/v1",
+                    api_key="test-key",
+                )
             summarizer.client = mock_client
         finally:
             if _orig is _sentinel:
@@ -698,11 +700,12 @@ def test_openai_summarizer_glm_provider_defaults():
     ):
         try:
             _cfg_module._GLOBAL_CONFIG["allow_remote_summarizer"] = True
-            summarizer = OpenAIBatchSummarizer(
-                model="glm-5",
-                api_base="https://api.z.ai/api/paas/v4/",
-                api_key="test-key",
-            )
+            with patch.object(OpenAIBatchSummarizer, "_init_client"):
+                summarizer = OpenAIBatchSummarizer(
+                    model="glm-5",
+                    api_base="https://api.z.ai/api/paas/v4/",
+                    api_key="test-key",
+                )
             summarizer.client = mock_client
         finally:
             if _orig is _sentinel:
@@ -774,6 +777,7 @@ def test_openai_summarizer_timeout_config():
     # Test valid float parsing
     # The summarizer reads config.get("allow_remote_summarizer") — patch it
     # alongside the env vars so the non-localhost URL is accepted.
+    # Mock httpx.Client to capture the timeout kwarg without creating a real SSL context.
     with patch.dict(
         "os.environ",
         {
@@ -782,10 +786,12 @@ def test_openai_summarizer_timeout_config():
         },
         clear=True,
     ), patch("jcodemunch_mcp.summarizer.batch_summarize._config.get",
-             side_effect=lambda k, d=None: True if k == "allow_remote_summarizer" else d):
+             side_effect=lambda k, d=None: True if k == "allow_remote_summarizer" else d), \
+         patch("httpx.Client") as mock_httpx:
         summarizer = OpenAIBatchSummarizer()
         assert summarizer.client is not None
-        assert summarizer.client.timeout.read == 120.5
+        call_kwargs = mock_httpx.call_args
+        assert call_kwargs[1]["timeout"] == 120.5
 
     # Test invalid string fallback
     with patch.dict(
@@ -796,10 +802,12 @@ def test_openai_summarizer_timeout_config():
         },
         clear=True,
     ), patch("jcodemunch_mcp.summarizer.batch_summarize._config.get",
-             side_effect=lambda k, d=None: True if k == "allow_remote_summarizer" else d):
+             side_effect=lambda k, d=None: True if k == "allow_remote_summarizer" else d), \
+         patch("httpx.Client") as mock_httpx:
         summarizer = OpenAIBatchSummarizer()
         assert summarizer.client is not None
-        assert summarizer.client.timeout.read == 60.0
+        call_kwargs = mock_httpx.call_args
+        assert call_kwargs[1]["timeout"] == 60.0
 
 
 # ---------------------------------------------------------------------------
