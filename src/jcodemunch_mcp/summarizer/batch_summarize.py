@@ -128,16 +128,27 @@ class BaseSummarizer:
         if not to_summarize:
             return symbols
 
+        total = len(to_summarize)
+        logger.info("AI summarization starting: %d symbols to process", total)
+
         max_workers = _config.get("summarizer_concurrency", 4)
         batches = [
             to_summarize[i : i + batch_size]
             for i in range(0, len(to_summarize), batch_size)
         ]
+        log_every = max(1, len(batches) // 10)  # log ~10 progress updates
 
         if max_workers <= 1 or len(batches) <= 1:
-            for batch in batches:
+            for i, batch in enumerate(batches):
                 self._run_batch(batch)
+                if (i + 1) % log_every == 0 or (i + 1) == len(batches):
+                    processed = min((i + 1) * batch_size, total)
+                    logger.info(
+                        "AI summarization: %d/%d symbols (%d%%)",
+                        processed, total, 100 * processed // total,
+                    )
         else:
+            completed_count = 0
             with ThreadPoolExecutor(max_workers=max_workers) as executor:
                 futures = {
                     executor.submit(self._run_batch, batch): batch
@@ -145,7 +156,15 @@ class BaseSummarizer:
                 }
                 for future in as_completed(futures):
                     future.result()
+                    completed_count += 1
+                    if completed_count % log_every == 0 or completed_count == len(batches):
+                        processed = min(completed_count * batch_size, total)
+                        logger.info(
+                            "AI summarization: ~%d/%d symbols (%d%%)",
+                            processed, total, 100 * processed // total,
+                        )
 
+        logger.info("AI summarization complete: %d symbols processed", total)
         return symbols
 
     def _run_batch(self, batch: list[Symbol]) -> None:
@@ -430,12 +449,17 @@ class OpenAIBatchSummarizer(BaseSummarizer):
         if not to_summarize:
             return symbols
 
+        total = len(to_summarize)
+        logger.info("AI summarization starting: %d symbols to process (provider=openai model=%s)", total, self.model)
+
         max_workers = int(os.environ.get("OPENAI_CONCURRENCY", "1"))
         batches = [
             to_summarize[i : i + batch_size]
             for i in range(0, len(to_summarize), batch_size)
         ]
+        log_every = max(1, len(batches) // 10)
 
+        completed_count = 0
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             futures = {
                 executor.submit(self._summarize_one_batch, batch): batch
@@ -443,6 +467,15 @@ class OpenAIBatchSummarizer(BaseSummarizer):
             }
             for future in as_completed(futures):
                 future.result()
+                completed_count += 1
+                if completed_count % log_every == 0 or completed_count == len(batches):
+                    processed = min(completed_count * batch_size, total)
+                    logger.info(
+                        "AI summarization: ~%d/%d symbols (%d%%)",
+                        processed, total, 100 * processed // total,
+                    )
+
+        logger.info("AI summarization complete: %d symbols processed", total)
 
         return symbols
 

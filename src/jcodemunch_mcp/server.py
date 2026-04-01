@@ -20,6 +20,7 @@ from . import config as config_module
 from .tools.index_repo import index_repo
 from .tools.index_folder import index_folder
 from .tools.index_file import index_file
+from .tools.summarize_repo import summarize_repo
 from .tools.list_repos import list_repos
 from .tools.resolve_repo import resolve_repo
 from .tools.get_file_tree import get_file_tree
@@ -252,6 +253,36 @@ async def list_tools() -> list[Tool]:
                     }
                 },
                 "required": ["path"]
+            }
+        ),
+        Tool(
+            name="summarize_repo",
+            description=(
+                "Re-run AI summarization on all symbols in an existing index. "
+                "Use this when index_folder completed but AI summaries are missing — "
+                "e.g., the background summarization thread was interrupted, AI was disabled "
+                "at index time, or the summarizer provider wasn't configured yet. "
+                "With force=true (recommended), clears all existing summaries and re-runs "
+                "the full 3-tier pipeline (docstring → AI → signature fallback)."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "repo": {
+                        "type": "string",
+                        "description": "Repository identifier (owner/repo or local/hash)"
+                    },
+                    "force": {
+                        "type": "boolean",
+                        "description": (
+                            "If true, clear all existing summaries and re-summarize every symbol. "
+                            "Required when index_folder already applied signature fallbacks. "
+                            "If false, only process symbols with no summary at all."
+                        ),
+                        "default": False
+                    }
+                },
+                "required": ["repo"]
             }
         ),
         Tool(
@@ -1291,6 +1322,15 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                     extra_ignore_patterns=arguments.get("extra_ignore_patterns"),
                     follow_symlinks=arguments.get("follow_symlinks", False),
                     incremental=arguments.get("incremental", True),
+                )
+            )
+        elif name == "summarize_repo":
+            result = await asyncio.to_thread(
+                functools.partial(
+                    summarize_repo,
+                    repo=arguments["repo"],
+                    force=arguments.get("force", False),
+                    storage_path=storage_path,
                 )
             )
         elif name == "index_file":

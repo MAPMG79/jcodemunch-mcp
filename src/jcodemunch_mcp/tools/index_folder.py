@@ -531,7 +531,7 @@ def index_folder(
                     new_symbols=summarized,
                     raw_files={},
                 )
-                logger.debug("Deferred summarization saved %d symbols for %s", len(summarized), repo_full)
+                logger.info("Deferred AI summarization saved %d symbols for %s", len(summarized), repo_full)
             except Exception as e:
                 logger.warning("Deferred summarization failed for %s: %s", repo_full, e)
 
@@ -744,6 +744,7 @@ def index_folder(
 
                 # Fire daemon thread for deferred summarization — index is already saved
                 # with empty summaries; this fills them in without blocking the response.
+                _summarization_deferred = False
                 if new_symbols and use_ai_summaries:
                     _summaries_copy = list(new_symbols)
                     _contents_copy = dict(raw_files_subset)
@@ -755,6 +756,11 @@ def index_folder(
                         name="deferred-summarizer",
                     )
                     _daemon.start()
+                    _summarization_deferred = True
+                    logger.info(
+                        "Deferred AI summarization started for %s/%s (%d symbols)",
+                        owner, repo_name, len(new_symbols),
+                    )
 
                 result = {
                     "success": True,
@@ -767,6 +773,12 @@ def index_folder(
                     "indexed_at": updated.indexed_at if updated else "",
                     "duration_seconds": round(time.monotonic() - t0, 2),
                 }
+                if _summarization_deferred:
+                    result["summarization_deferred"] = True
+                    result["summarization_note"] = (
+                        "AI summarization is running in the background. "
+                        "Call summarize_repo to run it synchronously if summaries are missing."
+                    )
                 if fast_warnings:
                     result["warnings"] = fast_warnings
                 _maybe_apply_adaptive(folder_path, result)

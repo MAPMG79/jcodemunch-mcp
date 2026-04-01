@@ -4,6 +4,16 @@ All notable changes to jcodemunch-mcp are documented here.
 
 ## [Unreleased]
 
+## [1.15.2] - 2026-04-01
+
+### Added
+- **`summarize_repo(repo, force)`** — new MCP tool that re-runs AI summarization on all symbols in an existing index. Useful when `index_folder` completed without AI summaries (deferred background thread was interrupted, AI was disabled at index time, or the provider wasn't configured). With `force=true`, clears all existing summaries and re-runs the full 3-tier pipeline (docstring → AI → signature fallback). Returns `{success, symbol_count, updated, skipped, duration_seconds}`. Reported by nikolai-vysotskyi in issue #190.
+- **AI summarization progress logging** — `summarize_batch` (both `BaseSummarizer` and `OpenAIBatchSummarizer`) now logs progress at INFO level every ~10% of batches: `"AI summarization: N/M symbols (P%)"`. Start and completion are also logged. Previously there was zero feedback during 10–30 minute summarization runs on large codebases.
+- **`summarization_deferred` field in `index_folder` response** — when the watcher-driven fast path fires a background summarization thread, the response now includes `"summarization_deferred": true` and a note suggesting `summarize_repo` as a synchronous fallback.
+
+### Changed
+- **Deferred summarization thread logging promoted to INFO** — thread start (`"Deferred AI summarization started for owner/repo (N symbols)"`) and completion (`"Deferred AI summarization saved N symbols for owner/repo"`) are now logged at INFO instead of DEBUG, making them visible in default logging configurations.
+
 ## [1.15.1] - 2026-04-01
 
 ### Fixed
