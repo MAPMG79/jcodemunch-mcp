@@ -4,6 +4,11 @@ All notable changes to jcodemunch-mcp are documented here.
 
 ## [Unreleased]
 
+## [1.21.10] - 2026-04-02
+
+### Fixed
+- **`index_folder` full re-index no longer crashes with `'dict' object has no attribute 'summary'` when an existing index is present (issue #198)** — `CodeIndex.symbols` is `list[dict]` (serialized symbol dicts), but the summary-preservation dict comprehension at the top of the full-index path used dot notation (`s.file`, `s.name`, `s.kind`, `s.summary`) instead of bracket notation (`s["file"]`, etc.). Any second full index (or first index when an in-memory stale cache remained after `invalidate_cache` on pre-1.21.8) would immediately fail with this `AttributeError`. Fixed by using `s["key"]` / `s.get("key")` throughout that comprehension. Regression test added.
+
 ## [1.21.9] - 2026-04-02
 
 ### Added

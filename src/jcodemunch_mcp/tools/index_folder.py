@@ -1050,9 +1050,9 @@ def index_folder(
                 }
                 if _folder_unchanged_files:
                     _folder_existing_summaries = {
-                        (s.file, s.name, s.kind): s.summary
+                        (s["file"], s["name"], s["kind"]): s["summary"]
                         for s in existing_index.symbols
-                        if s.summary and s.file in _folder_unchanged_files
+                        if s.get("summary") and s.get("file") in _folder_unchanged_files
                     }
                     logger.info(
                         "index_folder full — %d/%d files unchanged, %d summaries preserved",
