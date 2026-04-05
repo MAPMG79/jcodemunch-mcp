@@ -459,7 +459,7 @@ def run_index(*, dry_run: bool = False) -> str:
 
     try:
         from ..tools.index_folder import index_folder
-        result = index_folder(folder_path=cwd)
+        result = index_folder(path=cwd)
         files = result.get("files_indexed", "?")
         symbols = result.get("symbols_indexed", "?")
         return f"  indexed {cwd} ({files} files, {symbols} symbols)"
