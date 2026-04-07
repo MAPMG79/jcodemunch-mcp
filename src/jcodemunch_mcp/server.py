@@ -2515,13 +2515,13 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                         _meta[field] = existing_meta[field]
                 if _meta:
                     result["_meta"] = _meta
-        return [TextContent(type="text", text=json.dumps(result, indent=2))]
+        return [TextContent(type="text", text=json.dumps(result, separators=(',', ':')))]
 
     except KeyError as e:
-        return [TextContent(type="text", text=json.dumps({"error": f"Missing required argument: {e}. Check the tool schema for correct parameter names."}, indent=2))]
+        return [TextContent(type="text", text=json.dumps({"error": f"Missing required argument: {e}. Check the tool schema for correct parameter names."}, separators=(',', ':')))]
     except Exception:
         logger.error("call_tool %s failed", name, exc_info=True)
-        return [TextContent(type="text", text=json.dumps({"error": f"Internal error processing {name}"}, indent=2))]
+        return [TextContent(type="text", text=json.dumps({"error": f"Internal error processing {name}"}, separators=(',', ':')))]
 
 
 async def _run_server_with_watcher(

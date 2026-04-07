@@ -2,6 +2,11 @@
 
 All notable changes to jcodemunch-mcp are documented here.
 
+## [1.23.1] — 2026-04-07
+
+### Changed
+- Switch MCP tool responses from pretty-printed JSON (`indent=2`) to compact JSON (`separators=(',',':')`) — saves 30-40% tokens per response with zero information loss (fixes #219)
+
 ## [Unreleased]
 
 ## [1.23.0] - 2026-04-07
