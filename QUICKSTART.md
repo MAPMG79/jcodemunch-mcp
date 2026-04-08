@@ -15,7 +15,7 @@ jcodemunch-mcp init
 
 1. **Detects your MCP clients** (Claude Code, Claude Desktop, Cursor, Windsurf, Continue) and writes the config entry for each
 2. **Installs the CLAUDE.md prompt policy** so your agent actually uses jCodeMunch instead of brute-reading files
-3. **Optionally installs worktree hooks** for automatic Claude Code worktree indexing
+3. **Optionally installs enforcement hooks** (`--hooks`) — PreToolUse read guard, PostToolUse auto-reindex, and PreCompact session snapshot for Claude Code
 4. **Optionally indexes your current project**
 5. **Audits your agent config files** for token waste — flags bloated CLAUDE.md files, stale symbol references, redundancy between global and project configs, and scope leaks
 
@@ -25,7 +25,7 @@ For non-interactive setups (CI, scripts, dotfiles):
 jcodemunch-mcp init --yes --claude-md global --hooks --index --audit
 ```
 
-Run `jcodemunch-mcp init --dry-run` to preview what it would do without changing anything.
+Run `jcodemunch-mcp init --dry-run` to preview what it would do without changing anything. Or try `jcodemunch-mcp init --demo` — walks through the full process without making changes, then prints what *would* have happened.
 
 After `init` completes, restart your MCP client(s). Confirm with `/mcp` in Claude Code — you should see `jcodemunch` listed as connected.
 

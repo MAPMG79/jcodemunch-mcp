@@ -2,6 +2,17 @@
 
 All notable changes to jcodemunch-mcp are documented here.
 
+## [1.24.1] — 2026-04-08
+
+### Changed
+- **Comprehensive doc audit** — reviewed all CHANGELOG entries from 1.21.13–1.24.0 and updated 6 user-facing docs:
+  - **USER_GUIDE.md**: Added 12 missing tools (`plan_turn`, `get_session_context`, `register_edit`, `get_session_snapshot`, `get_call_hierarchy`, `get_hotspots`, `get_coupling_metrics`, `get_dependency_cycles`, `get_extraction_candidates`, `get_impact_preview`, `get_dead_code_v2`), `decorator` filter on `search_symbols`, `include_source`/`source_budget`/`decorator_filter` on `get_blast_radius`, negative evidence, and 9 new workflow patterns
+  - **CONFIGURATION.md**: Added 15 missing config keys (`agent_selector`, `exclude_skip_directories`, `exclude_secret_patterns`, `languages_adaptive`, `session_journal`, `turn_budget_tokens`, `turn_gap_seconds`, `negative_evidence_threshold`, `search_result_cache_max`, `plan_turn_*_threshold`, `session_resume`, `session_max_age_minutes`, `session_max_queries`, `discovery_hint`, `strict_timeout_ms`)
+  - **AGENT_HOOKS.md**: Added Python CLI hooks section (`hook-pretooluse`, `hook-posttooluse`, `hook-precompact`) with `init --hooks` as recommended install method; added call hierarchy, hotspots, decorator search, session tools to both prompt policy blocks
+  - **ARCHITECTURE.md**: Added 16 missing tools to Tool Surface; updated directory structure with `agent_selector.py`, `cli/`, `parser/` details, `_call_graph.py`, `session_journal.py`, `session_state.py`, `turn_budget.py`, `plan_turn.py`
+  - **README.md**: Added call hierarchy, hotspots, coupling metrics, dependency cycles to structural queries section; added session-aware routing, enforcement hooks, agent selector to feature list; updated `init` docs for `--hooks`
+  - **QUICKSTART.md**: Added enforcement hooks to `init` feature list; documented `--demo` flag
+
 ## [1.24.0] — 2026-04-08
 
 ### Added

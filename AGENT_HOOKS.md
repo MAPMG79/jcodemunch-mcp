@@ -72,13 +72,21 @@ Always use jCodemunch-MCP tools for code navigation. Never fall back to Read, Gr
 - where is this name used → `find_references`
 - is this identifier used anywhere → `check_references`
 - file dependency graph → `get_dependency_graph`
-- what breaks if I change X → `get_blast_radius` (add `include_depth_scores=true` for layered risk)
+- what breaks if I change X → `get_blast_radius` (add `include_depth_scores=true` for layered risk, `include_source=true` for fix-ready context)
 - what symbols actually changed since last commit → `get_changed_symbols`
 - find unreachable/dead code → `find_dead_code`
 - most important symbols by architecture → `get_symbol_importance`
 - class hierarchy → `get_class_hierarchy`
+- callers/callees of a symbol → `get_call_hierarchy`
+- high-risk symbols (complexity × churn) → `get_hotspots`
 - related symbols → `get_related_symbols`
 - diff two snapshots → `get_symbol_diff`
+- symbols by decorator → `search_symbols(decorator="...")` or `get_blast_radius(decorator_filter="...")`
+
+**Session awareness:**
+- starting a task → `plan_turn` (confidence + recommended symbols/files)
+- session history → `get_session_context`
+- after editing → `register_edit` (invalidates caches)
 
 **Retrieval with token budget:**
 - best-fit context for a task → `get_ranked_context` (query + token_budget)
@@ -125,6 +133,15 @@ Relationships & impact:
   find unreachable/dead code      → find_dead_code
   most important symbols          → get_symbol_importance
   class hierarchy                 → get_class_hierarchy
+  callers/callees of a symbol     → get_call_hierarchy
+  high-risk symbols               → get_hotspots (complexity × churn)
+  circular dependencies           → get_dependency_cycles
+  symbols by decorator            → search_symbols(decorator="route") or get_blast_radius(decorator_filter="...")
+
+Session awareness:
+  starting a new task             → plan_turn (confidence + recommended symbols)
+  what have I already read        → get_session_context
+  after editing a file            → register_edit (invalidates caches)
 
 Retrieval with token budget:
   best-fit context for a task     → get_ranked_context (query + token_budget)
@@ -135,13 +152,35 @@ After editing a file: index_file { "path": "/abs/path" } to keep the index fresh
 
 ---
 
-## Advanced Setup: Tool Hooks (Claude Code)
+## Advanced Setup: Python CLI Hooks (Recommended)
 
-> **Disclaimer:** These hooks intercept internal Claude Code tool calls. They modify the core behavior of the agent to heavily prefer jCodeMunch over native file exploration. Use them to strictly enforce jCodeMunch usage, but be aware they may block legitimate edge cases.
+> **New in v1.21.27+.** The fastest way to get enforcement hooks. Install with one command:
+
+```bash
+jcodemunch-mcp init --hooks
+```
+
+This installs three Python CLI hooks into `~/.claude/settings.json`:
+
+| Hook | Event | What it does |
+|------|-------|-------------|
+| `hook-pretooluse` | `PreToolUse` | **Read Guard** — intercepts `Read` calls on large code files (>=4KB). Instead of blocking, emits a stderr warning suggesting `get_file_outline` + `get_symbol_source`. Targeted reads (with `offset`/`limit`) pass silently. Does **not** deny Read (Edit/Write require a prior Read). |
+| `hook-posttooluse` | `PostToolUse` | **Auto-Reindex** — fires after `Edit` or `Write` on code files. Spawns `jcodemunch-mcp index-file` in the background to keep the index fresh automatically. |
+| `hook-precompact` | `PreCompact` | **Session Snapshot** — generates a compact session snapshot before Claude Code context compaction and injects it via `systemMessage` so session orientation survives compaction. |
+
+These hooks are idempotent (safe to re-run), backup-aware, and respect `--dry-run`.
+
+---
+
+## Advanced Setup: Shell Script Hooks (Claude Code)
+
+> **Disclaimer:** These shell hooks intercept internal Claude Code tool calls. They modify the core behavior of the agent to heavily prefer jCodeMunch over native file exploration. Use them to strictly enforce jCodeMunch usage, but be aware they may block legitimate edge cases.
+>
+> **Note:** The Python CLI hooks above are generally preferred — they're easier to install and maintain. Use shell hooks when you need custom logic or more aggressive blocking behavior (e.g., blocking Grep/Glob entirely).
 
 Claude Code supports `PreToolUse` and `PostToolUse` hooks. We provide three scripts to secure the entire lifecycle of code reading and writing:
 
-1. **Read Guard** (`PreToolUse`): Blocks grep/find commands so the agent searches via index instead.
+1. **Read Guard** (`PreToolUse`): Blocks grep/find commands so the agent searches via index instead. (Note: `Read` is intentionally NOT blocked — Edit/Write require a prior Read.)
 2. **Edit Guard** (`PreToolUse`): Warns or blocks the agent before modifying files blindly without using jCodeMunch read tools.
 3. **Index Hook** (`PostToolUse`): Automatically re-indexes files immediately after the agent modifies them.
 
