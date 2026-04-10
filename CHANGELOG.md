@@ -2,6 +2,14 @@
 
 All notable changes to jcodemunch-mcp are documented here.
 
+## [1.27.0] — 2026-04-10
+
+### Added
+- **Bundled ONNX local encoder** (Gap 1): new `embeddings/local_encoder.py` module ships a zero-config embedding provider using `all-MiniLM-L6-v2` (Apache 2.0, 384-dim, ~23 MB). Install via `pip install 'jcodemunch-mcp[local-embed]'` — no API keys, no internet after first download, no configuration. Includes a minimal WordPiece tokenizer (no `transformers` dependency) and L2-normalised mean-pooled output
+- **`local_onnx` provider (priority 0)**: when `onnxruntime` is installed and the model is present, `embed_repo` and `search_symbols(semantic=true)` automatically use the bundled encoder — zero friction. Falls through to sentence-transformers/Gemini/OpenAI if unavailable
+- **`download-model` CLI subcommand**: `jcodemunch-mcp download-model` fetches the ONNX model + vocab from HuggingFace to `~/.code-index/models/all-MiniLM-L6-v2/`. Auto-downloads on first `embed_repo` call if model is missing. Override path via `JCODEMUNCH_LOCAL_EMBED_MODEL` env var or `--target-dir` flag
+- **`[local-embed]` install extra**: `pip install 'jcodemunch-mcp[local-embed]'` adds `onnxruntime>=1.16.0` dependency
+
 ## [1.26.0] — 2026-04-10
 
 ### Added

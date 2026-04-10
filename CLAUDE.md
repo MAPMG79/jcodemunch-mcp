@@ -1,9 +1,9 @@
 # jcodemunch-mcp — Project Brief
 
 ## Current State
-- **Version:** 1.26.0 (published to PyPI)
+- **Version:** 1.27.0 (published to PyPI)
 - **INDEX_VERSION:** 8
-- **Tests:** 2466 passed, 7 skipped
+- **Tests:** 2490 passed, 8 skipped
 - **Python:** >=3.10
 
 ## Key Files
@@ -23,6 +23,8 @@ src/jcodemunch_mcp/
     fqn.py             # PHP FQN ↔ symbol_id translation (PSR-4); symbol_to_fqn(), fqn_to_symbol()
   storage/
     sqlite_store.py    # CodeIndex, save/load/incremental_save, WAL-aware LRU cache (_db_mtime_ns)
+  embeddings/
+    local_encoder.py   # Bundled ONNX local encoder (all-MiniLM-L6-v2, 384-dim); WordPiece tokenizer, encode_batch(), download_model()
   retrieval/
     signal_fusion.py   # Weighted Reciprocal Rank (WRR) fusion: lexical + structural + similarity + identity channels
   summarizer/
@@ -63,6 +65,7 @@ src/jcodemunch_mcp/
 | `config` | Print effective configuration grouped by concern |
 | `config --check` | Also validate prerequisites (storage writable, AI pkg installed, HTTP pkgs present) |
 | `config --upgrade` | Add missing keys from current template to existing config.jsonc, preserving user values |
+| `download-model` | Download bundled ONNX embedding model (all-MiniLM-L6-v2) for zero-config semantic search; `--target-dir` override |
 | `install-pack [id]` | Download and install a Starter Pack pre-built index; `--list` for catalog, `--license KEY` for premium |
 | `hook-pretooluse` | PreToolUse hook: intercept Read on large code files, suggest jCodemunch (reads JSON stdin) |
 | `hook-posttooluse` | PostToolUse hook: auto-reindex files after Edit/Write (reads JSON stdin) |
@@ -109,6 +112,7 @@ Tree-sitter grammar lacks clean named fields for these — custom regex extracto
 | `OPENAI_API_BASE` | — | Local LLM endpoint (Ollama, LM Studio) |
 | `OPENAI_WIRE_API` | — | Set `responses` to use OpenAI Responses API instead of chat/completions |
 | `OPENROUTER_API_KEY` | — | Enables OpenRouter summaries (default model: `meta-llama/llama-3.3-70b-instruct:free`) |
+| `JCODEMUNCH_LOCAL_EMBED_MODEL` | — | Override path to bundled ONNX model directory (default: `~/.code-index/models/all-MiniLM-L6-v2/`) |
 | `GEMINI_EMBED_TASK_AWARE` | 1 | Set `0`/`false`/`no`/`off` to disable task-type hints (`RETRIEVAL_DOCUMENT` / `CODE_RETRIEVAL_QUERY`) when using Gemini embeddings |
 | `JCODEMUNCH_CROSS_REPO_DEFAULT` | 0 | Set 1 to enable cross-repo traversal by default in find_importers, get_blast_radius, get_dependency_graph |
 | `JCODEMUNCH_EVENT_LOG` | — | Set `1` to write `_pulse.json` on every tool call (per-call activity signal for dashboards) |

@@ -3967,6 +3967,18 @@ def main(argv: Optional[list[str]] = None):
     )
     _add_common_args(wc_parser)
 
+    # --- download-model ---
+    dm_parser = subparsers.add_parser(
+        "download-model",
+        help="Download the bundled ONNX embedding model (all-MiniLM-L6-v2) for zero-config semantic search",
+    )
+    dm_parser.add_argument(
+        "--target-dir",
+        default=None,
+        metavar="PATH",
+        help="Custom directory to store the model (default: ~/.code-index/models/all-MiniLM-L6-v2/)",
+    )
+
     # --- install-pack ---
     ip_parser = subparsers.add_parser(
         "install-pack",
@@ -4005,7 +4017,7 @@ def main(argv: Optional[list[str]] = None):
     if any(arg in top_level_flags for arg in raw_argv):
         args = parser.parse_args(raw_argv)
     else:
-        known_commands = {"serve", "watch", "hook-event", "hook-pretooluse", "hook-posttooluse", "hook-precompact", "hook-taskcomplete", "hook-subagent-start", "watch-claude", "config", "index-file", "claude-md", "init", "install-pack"}
+        known_commands = {"serve", "watch", "hook-event", "hook-pretooluse", "hook-posttooluse", "hook-precompact", "hook-taskcomplete", "hook-subagent-start", "watch-claude", "config", "index-file", "claude-md", "init", "install-pack", "download-model"}
         has_subcommand = any(arg in known_commands for arg in raw_argv if not arg.startswith("-"))
         if not has_subcommand:
             raw_argv = ["serve"] + list(raw_argv)
@@ -4039,6 +4051,17 @@ def main(argv: Optional[list[str]] = None):
             yes=args.yes,
             no_backup=args.no_backup,
         ))
+
+    if args.command == "download-model":
+        from .embeddings.local_encoder import download_model as _download_model
+        from pathlib import Path as _Path
+        try:
+            target = _Path(args.target_dir) if args.target_dir else None
+            _download_model(target)
+            sys.exit(0)
+        except Exception as exc:
+            print(f"Error: {exc}", file=sys.stderr)  # noqa: T201
+            sys.exit(1)
 
     if args.command == "install-pack":
         from .cli.install_pack import run_install_pack

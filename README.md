@@ -244,14 +244,21 @@ jcodemunch-mcp init --yes --claude-md global --hooks --index --audit
 pip install jcodemunch-mcp
 ```
 
-> **Want AI-generated summaries?** The base install does not include AI provider
-> packages (to keep it lightweight). Install the extra for your provider:
+> **Want semantic search?** Install the local embedding extra for zero-config
+> semantic search — no API keys, no internet after first download:
+>
+> ```bash
+> pip install "jcodemunch-mcp[local-embed]"  # bundled ONNX encoder (recommended)
+> jcodemunch-mcp download-model              # fetch model (~23 MB, one-time)
+> ```
+>
+> **Want AI-generated summaries?** Install the extra for your provider:
 >
 > ```bash
 > pip install "jcodemunch-mcp[anthropic]"   # Claude
 > pip install "jcodemunch-mcp[gemini]"      # Gemini
 > pip install "jcodemunch-mcp[openai]"      # OpenAI-compatible
-> pip install "jcodemunch-mcp[all]"         # all providers
+> pip install "jcodemunch-mcp[all]"         # all providers + local embeddings
 > ```
 >
 > Without an extra, summaries fall back to signatures (which still works — you
