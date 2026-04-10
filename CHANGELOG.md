@@ -2,6 +2,13 @@
 
 All notable changes to jcodemunch-mcp are documented here.
 
+## [1.24.4] — 2026-04-10
+
+### Added
+- **`get_untested_symbols`**: new tool — find functions and methods with no evidence of test-file reachability. Uses import-graph analysis + name matching (AST call_references when available, word-boundary text heuristic as fallback). Classifies symbols as "unreached" (no test imports the source file) or "imported_not_called" (test imports the module but no test references this specific function). Supports `file_pattern` glob filter, `min_confidence` threshold, and `max_results` cap
+- **`get_blast_radius` enrichment**: every confirmed entry now includes a `has_test_reach: bool` field indicating whether any test file imports that file AND references the affected symbol by name
+- **`_is_test_file()` expanded**: now recognizes JS/TS test patterns (`.spec.ts`, `.spec.js`, `.test.ts`, `.test.js`, `__tests__/`) in addition to existing Python patterns. Benefits both `find_dead_code` and `get_untested_symbols`
+
 ## [1.24.3] — 2026-04-10
 
 ### Added

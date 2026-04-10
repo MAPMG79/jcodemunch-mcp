@@ -61,7 +61,7 @@ _CANONICAL_TOOL_NAMES: tuple[str, ...] = (
     # Quality & Metrics
     "get_symbol_complexity", "get_churn_rate", "get_hotspots",
     "get_repo_health", "get_symbol_importance", "find_dead_code",
-    "get_dead_code_v2",
+    "get_dead_code_v2", "get_untested_symbols",
     # Diffs & Embeddings
     "get_symbol_diff", "embed_repo",
     # Utilities
@@ -1495,6 +1495,43 @@ def _build_tools_list() -> list[Tool]:
             },
         ),
         Tool(
+            name="get_untested_symbols",
+            description=(
+                "Find functions and methods with no evidence of being exercised by any test file. "
+                "Uses import-graph reachability + name matching (AST call_references when available, "
+                "word-boundary text heuristic as fallback). Returns symbols classified as 'unreached' "
+                "(no test file imports the source file) or 'imported_not_called' (test imports the "
+                "module but no test references this specific function). "
+                "This is heuristic reachability, NOT runtime coverage — it answers 'does any test "
+                "reference this symbol?' rather than 'what % of lines are covered.' "
+                "Use after get_repo_health for a deeper quality picture."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "repo": {
+                        "type": "string",
+                        "description": "Repository identifier (owner/repo or just repo name)",
+                    },
+                    "file_pattern": {
+                        "type": "string",
+                        "description": "Optional glob to narrow which source files are analysed (e.g. 'src/**/*.py').",
+                    },
+                    "min_confidence": {
+                        "type": "number",
+                        "description": "Minimum confidence to include (0.0–1.0, default 0.5).",
+                        "default": 0.5,
+                    },
+                    "max_results": {
+                        "type": "integer",
+                        "description": "Cap on returned symbols (default 100).",
+                        "default": 100,
+                    },
+                },
+                "required": ["repo"],
+            },
+        ),
+        Tool(
             name="get_symbol_importance",
             description=(
                 "Return the most architecturally important symbols in a repo, ranked by "
@@ -2386,6 +2423,18 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                     storage_path=storage_path,
                 )
             )
+        elif name == "get_untested_symbols":
+            from .tools.get_untested_symbols import get_untested_symbols
+            result = await asyncio.to_thread(
+                functools.partial(
+                    get_untested_symbols,
+                    repo=arguments["repo"],
+                    file_pattern=arguments.get("file_pattern"),
+                    min_confidence=arguments.get("min_confidence", 0.5),
+                    max_results=arguments.get("max_results", 100),
+                    storage_path=storage_path,
+                )
+            )
         elif name == "get_changed_symbols":
             from .tools.get_changed_symbols import get_changed_symbols
             result = await asyncio.to_thread(
@@ -2993,7 +3042,8 @@ def _generate_claude_md_snippet(missing_only: bool = False) -> str:
                           "get_cross_repo_map"]),
         ("Quality & Metrics", ["get_symbol_complexity", "get_churn_rate", "get_hotspots",
                                 "get_repo_health", "get_symbol_importance",
-                                "find_dead_code", "get_dead_code_v2"]),
+                                "find_dead_code", "get_dead_code_v2",
+                                "get_untested_symbols"]),
         ("Diffs & Embeddings", ["get_symbol_diff", "embed_repo"]),
         ("Session-Aware Routing", ["plan_turn", "get_session_context", "get_session_snapshot", "register_edit"]),
         ("Utilities", ["get_session_stats", "invalidate_cache", "test_summarizer",
