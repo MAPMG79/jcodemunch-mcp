@@ -2,6 +2,12 @@
 
 All notable changes to jcodemunch-mcp are documented here.
 
+## [1.43.0] — 2026-04-13
+
+### Added
+- **6 new languages** — F# (`.fs`, `.fsi`, `.fsx`), Clojure (`.clj`, `.cljs`, `.cljc`, `.edn`), Emacs Lisp (`.el`), Nim (`.nim`, `.nims`, `.nimble`), Tcl (`.tcl`, `.tk`, `.itcl`), D (`.d`, `.di`)
+- Custom tree-sitter parsers for all 6 languages with full symbol extraction: F# modules/functions/types/values, Clojure namespace-qualified defn/def/defprotocol/defrecord, Emacs Lisp defun/defvar/defconst/defmacro with docstrings, Nim proc/func/template/macro/type/var/let/const, Tcl proc with namespace nesting (`::`-qualified names), D functions/classes/structs/interfaces/enums/templates with nested method extraction
+
 ## [1.42.0] — 2026-04-13
 
 ### Added

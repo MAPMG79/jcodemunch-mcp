@@ -312,6 +312,18 @@ def parse_file(content: str, filename: str, language: str, source_bytes: Optiona
         symbols = _parse_apex_symbols(source_bytes, filename)
     elif language == "ocaml":
         symbols = _parse_ocaml_symbols(source_bytes, filename)
+    elif language == "fsharp":
+        symbols = _parse_fsharp_symbols(source_bytes, filename)
+    elif language == "clojure":
+        symbols = _parse_clojure_symbols(source_bytes, filename)
+    elif language == "elisp":
+        symbols = _parse_elisp_symbols(source_bytes, filename)
+    elif language == "nim":
+        symbols = _parse_nim_symbols(source_bytes, filename)
+    elif language == "tcl":
+        symbols = _parse_tcl_symbols(source_bytes, filename)
+    elif language == "dlang":
+        symbols = _parse_dlang_symbols(source_bytes, filename)
     elif language in ("sass", "less", "styl"):
         symbols = []  # No tree-sitter grammar; files indexed for text search only
     elif language == "json":
@@ -8591,6 +8603,657 @@ def _parse_ocaml_symbols(source_bytes: bytes, filename: str) -> list[Symbol]:
                             content_hash=compute_content_hash(source_bytes[node.start_byte:node.end_byte]),
                         ))
                         return
+
+        for child in node.children:
+            _walk(child, scope)
+
+    _walk(tree.root_node)
+    return symbols
+
+
+# ---------------------------------------------------------------------------
+# F# custom parser
+# ---------------------------------------------------------------------------
+
+def _parse_fsharp_symbols(source_bytes: bytes, filename: str) -> list[Symbol]:
+    """Extract symbols from F# source code using tree-sitter."""
+    parser = get_parser("fsharp")
+    tree = parser.parse(source_bytes)
+    symbols: list[Symbol] = []
+
+    def _text(node) -> str:
+        return node.text.decode("utf-8", errors="replace")
+
+    def _first_child_of_type(node, *types):
+        for child in node.children:
+            if child.type in types:
+                return child
+        return None
+
+    def _walk(node, scope: str = ""):
+        if node.type == "module_defn":
+            # module MyModule = ...
+            ident = _first_child_of_type(node, "identifier")
+            if ident:
+                mod_name = _text(ident)
+                qualified = f"{scope}.{mod_name}" if scope else mod_name
+                symbols.append(Symbol(
+                    id=make_symbol_id(filename, qualified, "class"),
+                    file=filename, name=mod_name, qualified_name=qualified,
+                    kind="class", language="fsharp",
+                    signature=f"module {mod_name}",
+                    docstring="",
+                    line=node.start_point[0] + 1,
+                    end_line=node.end_point[0] + 1,
+                    byte_offset=node.start_byte,
+                    byte_length=node.end_byte - node.start_byte,
+                    content_hash=compute_content_hash(source_bytes[node.start_byte:node.end_byte]),
+                ))
+                for child in node.children:
+                    _walk(child, qualified)
+                return
+
+        elif node.type == "declaration_expression":
+            fovd = _first_child_of_type(node, "function_or_value_defn")
+            if fovd:
+                _walk(fovd, scope)
+                return
+
+        elif node.type == "function_or_value_defn":
+            fdl = _first_child_of_type(node, "function_declaration_left")
+            vdl = _first_child_of_type(node, "value_declaration_left")
+            if fdl:
+                ident = _first_child_of_type(fdl, "identifier")
+                if ident:
+                    name = _text(ident)
+                    qualified = f"{scope}.{name}" if scope else name
+                    args = _first_child_of_type(fdl, "argument_patterns")
+                    sig = f"let {name}"
+                    if args:
+                        sig += f" {_text(args)}"
+                    # Check for return type annotation
+                    for i, child in enumerate(node.children):
+                        if child.type == ":" and i + 1 < len(node.children):
+                            rt = node.children[i + 1]
+                            if rt.type in ("simple_type", "type"):
+                                sig += f" : {_text(rt)}"
+                            break
+                    symbols.append(Symbol(
+                        id=make_symbol_id(filename, qualified, "function"),
+                        file=filename, name=name, qualified_name=qualified,
+                        kind="function", language="fsharp",
+                        signature=sig,
+                        docstring="",
+                        line=node.start_point[0] + 1,
+                        end_line=node.end_point[0] + 1,
+                        byte_offset=node.start_byte,
+                        byte_length=node.end_byte - node.start_byte,
+                        content_hash=compute_content_hash(source_bytes[node.start_byte:node.end_byte]),
+                    ))
+            elif vdl:
+                ip = _first_child_of_type(vdl, "identifier_pattern")
+                if ip:
+                    name = _text(ip)
+                    qualified = f"{scope}.{name}" if scope else name
+                    sig = f"let {name}"
+                    symbols.append(Symbol(
+                        id=make_symbol_id(filename, qualified, "constant"),
+                        file=filename, name=name, qualified_name=qualified,
+                        kind="constant", language="fsharp",
+                        signature=sig,
+                        docstring="",
+                        line=node.start_point[0] + 1,
+                        end_line=node.end_point[0] + 1,
+                        byte_offset=node.start_byte,
+                        byte_length=node.end_byte - node.start_byte,
+                        content_hash=compute_content_hash(source_bytes[node.start_byte:node.end_byte]),
+                    ))
+            return
+
+        elif node.type == "type_definition":
+            td = _first_child_of_type(node, "record_type_defn", "union_type_defn",
+                                       "type_abbrev_defn", "enum_type_defn",
+                                       "class_type_defn", "anon_type_defn")
+            if td:
+                ident = _first_child_of_type(td, "type_name", "identifier")
+                if ident:
+                    name = _text(ident)
+                    qualified = f"{scope}.{name}" if scope else name
+                    sig_text = _text(node).split("\n")[0].strip()[:120]
+                    symbols.append(Symbol(
+                        id=make_symbol_id(filename, qualified, "type"),
+                        file=filename, name=name, qualified_name=qualified,
+                        kind="type", language="fsharp",
+                        signature=sig_text,
+                        docstring="",
+                        line=node.start_point[0] + 1,
+                        end_line=node.end_point[0] + 1,
+                        byte_offset=node.start_byte,
+                        byte_length=node.end_byte - node.start_byte,
+                        content_hash=compute_content_hash(source_bytes[node.start_byte:node.end_byte]),
+                    ))
+            return
+
+        for child in node.children:
+            _walk(child, scope)
+
+    _walk(tree.root_node)
+    return symbols
+
+
+# ---------------------------------------------------------------------------
+# Clojure custom parser
+# ---------------------------------------------------------------------------
+
+# Forms that define named symbols
+_CLOJURE_DEF_FORMS = {
+    "defn": "function",
+    "defn-": "function",
+    "defmacro": "function",
+    "defmulti": "function",
+    "defmethod": "function",
+    "def": "constant",
+    "defonce": "constant",
+    "defprotocol": "type",
+    "defrecord": "type",
+    "deftype": "type",
+    "definterface": "type",
+    "defstruct": "type",
+}
+
+
+def _parse_clojure_symbols(source_bytes: bytes, filename: str) -> list[Symbol]:
+    """Extract symbols from Clojure source code using tree-sitter."""
+    parser = get_parser("clojure")
+    tree = parser.parse(source_bytes)
+    symbols: list[Symbol] = []
+    state = {"ns": ""}  # mutable container so ns persists across siblings
+
+    def _text(node) -> str:
+        return node.text.decode("utf-8", errors="replace")
+
+    def _walk(node):
+        if node.type == "list_lit":
+            children = [c for c in node.children if c.is_named]
+            if len(children) >= 2 and children[0].type == "sym_lit":
+                form = _text(children[0])
+                # Handle ns declaration
+                if form == "ns" and children[1].type == "sym_lit":
+                    state["ns"] = _text(children[1])
+                    return
+                # Handle def forms
+                ns = state["ns"]
+                if form in _CLOJURE_DEF_FORMS and children[1].type == "sym_lit":
+                    name = _text(children[1])
+                    kind = _CLOJURE_DEF_FORMS[form]
+                    qualified = f"{ns}/{name}" if ns else name
+                    sig_parts = [f"({form} {name}"]
+                    # Add parameter vector for functions
+                    if kind == "function" and len(children) > 2:
+                        for c in children[2:]:
+                            if c.type == "vec_lit":
+                                sig_parts.append(f" {_text(c)}")
+                                break
+                    sig_parts.append(")")
+                    sig = "".join(sig_parts)[:120]
+                    symbols.append(Symbol(
+                        id=make_symbol_id(filename, qualified, kind),
+                        file=filename, name=name, qualified_name=qualified,
+                        kind=kind, language="clojure",
+                        signature=sig,
+                        docstring="",
+                        line=node.start_point[0] + 1,
+                        end_line=node.end_point[0] + 1,
+                        byte_offset=node.start_byte,
+                        byte_length=node.end_byte - node.start_byte,
+                        content_hash=compute_content_hash(source_bytes[node.start_byte:node.end_byte]),
+                    ))
+                    return
+
+        for child in node.children:
+            _walk(child)
+
+    _walk(tree.root_node)
+    return symbols
+
+
+# ---------------------------------------------------------------------------
+# Emacs Lisp custom parser
+# ---------------------------------------------------------------------------
+
+def _parse_elisp_symbols(source_bytes: bytes, filename: str) -> list[Symbol]:
+    """Extract symbols from Emacs Lisp source code using tree-sitter."""
+    parser = get_parser("elisp")
+    tree = parser.parse(source_bytes)
+    symbols: list[Symbol] = []
+
+    def _text(node) -> str:
+        return node.text.decode("utf-8", errors="replace")
+
+    def _first_child_of_type(node, *types):
+        for child in node.children:
+            if child.type in types:
+                return child
+        return None
+
+    def _walk(node):
+        if node.type == "function_definition":
+            # (defun NAME (ARGS) ...)
+            sym = _first_child_of_type(node, "symbol")
+            if sym:
+                name = _text(sym)
+                params = _first_child_of_type(node, "list")
+                sig = f"(defun {name}"
+                if params:
+                    sig += f" {_text(params)}"
+                sig += ")"
+                # Check for docstring (string node after params)
+                docstring = ""
+                found_params = False
+                for child in node.children:
+                    if child.type == "list":
+                        found_params = True
+                    elif found_params and child.type == "string":
+                        docstring = _text(child).strip('"')
+                        break
+                symbols.append(Symbol(
+                    id=make_symbol_id(filename, name, "function"),
+                    file=filename, name=name, qualified_name=name,
+                    kind="function", language="elisp",
+                    signature=sig[:120],
+                    docstring=docstring,
+                    line=node.start_point[0] + 1,
+                    end_line=node.end_point[0] + 1,
+                    byte_offset=node.start_byte,
+                    byte_length=node.end_byte - node.start_byte,
+                    content_hash=compute_content_hash(source_bytes[node.start_byte:node.end_byte]),
+                ))
+                return
+
+        elif node.type == "macro_definition":
+            # (defmacro NAME (ARGS) ...)
+            sym = _first_child_of_type(node, "symbol")
+            if sym:
+                name = _text(sym)
+                params = _first_child_of_type(node, "list")
+                sig = f"(defmacro {name}"
+                if params:
+                    sig += f" {_text(params)}"
+                sig += ")"
+                symbols.append(Symbol(
+                    id=make_symbol_id(filename, name, "function"),
+                    file=filename, name=name, qualified_name=name,
+                    kind="function", language="elisp",
+                    signature=sig[:120],
+                    docstring="",
+                    line=node.start_point[0] + 1,
+                    end_line=node.end_point[0] + 1,
+                    byte_offset=node.start_byte,
+                    byte_length=node.end_byte - node.start_byte,
+                    content_hash=compute_content_hash(source_bytes[node.start_byte:node.end_byte]),
+                ))
+                return
+
+        elif node.type == "special_form":
+            # (defvar NAME ...) or (defconst NAME ...) or (defcustom NAME ...)
+            children = list(node.children)
+            for child in children:
+                if child.type in ("defvar", "defconst", "defcustom"):
+                    sym = _first_child_of_type(node, "symbol")
+                    if sym:
+                        name = _text(sym)
+                        form = child.type
+                        sig = f"({form} {name})"
+                        # Check for docstring
+                        docstring = ""
+                        for c in children:
+                            if c.type == "string":
+                                docstring = _text(c).strip('"')
+                                break
+                        symbols.append(Symbol(
+                            id=make_symbol_id(filename, name, "constant"),
+                            file=filename, name=name, qualified_name=name,
+                            kind="constant", language="elisp",
+                            signature=sig,
+                            docstring=docstring,
+                            line=node.start_point[0] + 1,
+                            end_line=node.end_point[0] + 1,
+                            byte_offset=node.start_byte,
+                            byte_length=node.end_byte - node.start_byte,
+                            content_hash=compute_content_hash(source_bytes[node.start_byte:node.end_byte]),
+                        ))
+                    return
+
+        for child in node.children:
+            _walk(child)
+
+    _walk(tree.root_node)
+    return symbols
+
+
+# ---------------------------------------------------------------------------
+# Nim custom parser
+# ---------------------------------------------------------------------------
+
+def _parse_nim_symbols(source_bytes: bytes, filename: str) -> list[Symbol]:
+    """Extract symbols from Nim source code using tree-sitter."""
+    parser = get_parser("nim")
+    tree = parser.parse(source_bytes)
+    symbols: list[Symbol] = []
+
+    def _text(node) -> str:
+        return node.text.decode("utf-8", errors="replace")
+
+    def _first_child_of_type(node, *types):
+        for child in node.children:
+            if child.type in types:
+                return child
+        return None
+
+    def _walk(node, scope: str = ""):
+        if node.type in ("proc_declaration", "func_declaration",
+                         "template_declaration", "macro_declaration",
+                         "method_declaration", "iterator_declaration",
+                         "converter_declaration"):
+            ident = _first_child_of_type(node, "identifier")
+            if ident:
+                name = _text(ident)
+                qualified = f"{scope}.{name}" if scope else name
+                kind_map = {
+                    "proc_declaration": "proc",
+                    "func_declaration": "func",
+                    "template_declaration": "template",
+                    "macro_declaration": "macro",
+                    "method_declaration": "method",
+                    "iterator_declaration": "iterator",
+                    "converter_declaration": "converter",
+                }
+                kind_label = kind_map.get(node.type, "proc")
+                params = _first_child_of_type(node, "parameter_declaration_list")
+                sig = f"{kind_label} {name}"
+                if params:
+                    sig += _text(params)
+                # Check for return type
+                for i, child in enumerate(node.children):
+                    if child.type == ":" and i + 1 < len(node.children):
+                        rt = node.children[i + 1]
+                        if rt.type == "type_expression":
+                            sig += f": {_text(rt)}"
+                        break
+                symbols.append(Symbol(
+                    id=make_symbol_id(filename, qualified, "function"),
+                    file=filename, name=name, qualified_name=qualified,
+                    kind="function", language="nim",
+                    signature=sig[:120],
+                    docstring="",
+                    line=node.start_point[0] + 1,
+                    end_line=node.end_point[0] + 1,
+                    byte_offset=node.start_byte,
+                    byte_length=node.end_byte - node.start_byte,
+                    content_hash=compute_content_hash(source_bytes[node.start_byte:node.end_byte]),
+                ))
+            return
+
+        elif node.type == "type_section":
+            for child in node.children:
+                if child.type == "type_declaration":
+                    tsd = _first_child_of_type(child, "type_symbol_declaration")
+                    if tsd:
+                        name = _text(tsd).strip().rstrip("*")
+                        qualified = f"{scope}.{name}" if scope else name
+                        sig_text = _text(child).split("\n")[0].strip()[:120]
+                        symbols.append(Symbol(
+                            id=make_symbol_id(filename, qualified, "type"),
+                            file=filename, name=name, qualified_name=qualified,
+                            kind="type", language="nim",
+                            signature=sig_text,
+                            docstring="",
+                            line=child.start_point[0] + 1,
+                            end_line=child.end_point[0] + 1,
+                            byte_offset=child.start_byte,
+                            byte_length=child.end_byte - child.start_byte,
+                            content_hash=compute_content_hash(source_bytes[child.start_byte:child.end_byte]),
+                        ))
+            return
+
+        elif node.type in ("var_section", "let_section", "const_section"):
+            section_kind = node.type.split("_")[0]  # var/let/const
+            for child in node.children:
+                if child.type == "variable_declaration":
+                    sdl = _first_child_of_type(child, "symbol_declaration_list")
+                    ident = _first_child_of_type(child, "identifier")
+                    name_node = sdl or ident
+                    if name_node:
+                        name = _text(name_node).strip().rstrip("*")
+                        qualified = f"{scope}.{name}" if scope else name
+                        sig = f"{section_kind} {_text(child).strip()}"[:120]
+                        symbols.append(Symbol(
+                            id=make_symbol_id(filename, qualified, "constant"),
+                            file=filename, name=name, qualified_name=qualified,
+                            kind="constant", language="nim",
+                            signature=sig,
+                            docstring="",
+                            line=child.start_point[0] + 1,
+                            end_line=child.end_point[0] + 1,
+                            byte_offset=child.start_byte,
+                            byte_length=child.end_byte - child.start_byte,
+                            content_hash=compute_content_hash(source_bytes[child.start_byte:child.end_byte]),
+                        ))
+            return
+
+        for child in node.children:
+            _walk(child, scope)
+
+    _walk(tree.root_node)
+    return symbols
+
+
+# ---------------------------------------------------------------------------
+# Tcl custom parser
+# ---------------------------------------------------------------------------
+
+def _parse_tcl_symbols(source_bytes: bytes, filename: str) -> list[Symbol]:
+    """Extract symbols from Tcl source code using tree-sitter."""
+    parser = get_parser("tcl")
+    tree = parser.parse(source_bytes)
+    symbols: list[Symbol] = []
+
+    def _text(node) -> str:
+        return node.text.decode("utf-8", errors="replace")
+
+    def _walk(node, scope: str = ""):
+        if node.type == "procedure":
+            # proc NAME ARGS BODY
+            children = [c for c in node.children if c.is_named]
+            # First named child after 'proc' is the name (simple_word),
+            # second is arguments
+            name_node = None
+            args_node = None
+            for child in children:
+                if child.type == "simple_word" and name_node is None:
+                    name_node = child
+                elif child.type == "arguments" and name_node is not None:
+                    args_node = child
+                    break
+            if name_node:
+                name = _text(name_node)
+                qualified = f"{scope}::{name}" if scope else name
+                sig = f"proc {name}"
+                if args_node:
+                    sig += f" {_text(args_node)}"
+                symbols.append(Symbol(
+                    id=make_symbol_id(filename, qualified, "function"),
+                    file=filename, name=name, qualified_name=qualified,
+                    kind="function", language="tcl",
+                    signature=sig[:120],
+                    docstring="",
+                    line=node.start_point[0] + 1,
+                    end_line=node.end_point[0] + 1,
+                    byte_offset=node.start_byte,
+                    byte_length=node.end_byte - node.start_byte,
+                    content_hash=compute_content_hash(source_bytes[node.start_byte:node.end_byte]),
+                ))
+                # Walk into body for nested procs
+                for child in node.children:
+                    if child.type == "braced_word":
+                        for inner in child.children:
+                            _walk(inner, qualified)
+                return
+
+        elif node.type == "namespace":
+            # namespace eval NAME { ... }
+            wl = None
+            for child in node.children:
+                if child.type == "word_list":
+                    wl = child
+                    break
+            if wl:
+                named = [c for c in wl.children if c.type == "simple_word"]
+                if len(named) >= 2 and _text(named[0]) == "eval":
+                    ns_name = _text(named[1])
+                    qualified = f"{scope}::{ns_name}" if scope else ns_name
+                    symbols.append(Symbol(
+                        id=make_symbol_id(filename, qualified, "class"),
+                        file=filename, name=ns_name, qualified_name=qualified,
+                        kind="class", language="tcl",
+                        signature=f"namespace eval {ns_name}",
+                        docstring="",
+                        line=node.start_point[0] + 1,
+                        end_line=node.end_point[0] + 1,
+                        byte_offset=node.start_byte,
+                        byte_length=node.end_byte - node.start_byte,
+                        content_hash=compute_content_hash(source_bytes[node.start_byte:node.end_byte]),
+                    ))
+                    # Walk inside the braced_word for nested procs
+                    for child in wl.children:
+                        if child.type == "braced_word":
+                            for inner in child.children:
+                                _walk(inner, qualified)
+                    return
+
+        for child in node.children:
+            _walk(child, scope)
+
+    _walk(tree.root_node)
+    return symbols
+
+
+# ---------------------------------------------------------------------------
+# D language custom parser
+# ---------------------------------------------------------------------------
+
+def _parse_dlang_symbols(source_bytes: bytes, filename: str) -> list[Symbol]:
+    """Extract symbols from D source code using tree-sitter."""
+    parser = get_parser("d")
+    tree = parser.parse(source_bytes)
+    symbols: list[Symbol] = []
+
+    def _text(node) -> str:
+        return node.text.decode("utf-8", errors="replace")
+
+    def _first_child_of_type(node, *types):
+        for child in node.children:
+            if child.type in types:
+                return child
+        return None
+
+    def _walk(node, scope: str = ""):
+        if node.type == "module_def":
+            # Walk children (module_declaration, then actual definitions)
+            for child in node.children:
+                _walk(child, scope)
+            return
+
+        elif node.type == "function_declaration":
+            ident = _first_child_of_type(node, "identifier")
+            if ident:
+                name = _text(ident)
+                qualified = f"{scope}.{name}" if scope else name
+                ret_type = _first_child_of_type(node, "type")
+                params = _first_child_of_type(node, "parameters")
+                sig = ""
+                if ret_type:
+                    sig = f"{_text(ret_type)} "
+                sig += name
+                if params:
+                    sig += _text(params)
+                symbols.append(Symbol(
+                    id=make_symbol_id(filename, qualified, "function"),
+                    file=filename, name=name, qualified_name=qualified,
+                    kind="function", language="dlang",
+                    signature=sig[:120],
+                    docstring="",
+                    line=node.start_point[0] + 1,
+                    end_line=node.end_point[0] + 1,
+                    byte_offset=node.start_byte,
+                    byte_length=node.end_byte - node.start_byte,
+                    content_hash=compute_content_hash(source_bytes[node.start_byte:node.end_byte]),
+                ))
+            return
+
+        elif node.type in ("class_declaration", "struct_declaration",
+                           "interface_declaration"):
+            ident = _first_child_of_type(node, "identifier")
+            if ident:
+                name = _text(ident)
+                qualified = f"{scope}.{name}" if scope else name
+                keyword = node.type.replace("_declaration", "")
+                symbols.append(Symbol(
+                    id=make_symbol_id(filename, qualified, "class"),
+                    file=filename, name=name, qualified_name=qualified,
+                    kind="class", language="dlang",
+                    signature=f"{keyword} {name}",
+                    docstring="",
+                    line=node.start_point[0] + 1,
+                    end_line=node.end_point[0] + 1,
+                    byte_offset=node.start_byte,
+                    byte_length=node.end_byte - node.start_byte,
+                    content_hash=compute_content_hash(source_bytes[node.start_byte:node.end_byte]),
+                ))
+                # Walk into body for methods
+                body = _first_child_of_type(node, "aggregate_body")
+                if body:
+                    for child in body.children:
+                        _walk(child, qualified)
+                return
+
+        elif node.type == "enum_declaration":
+            ident = _first_child_of_type(node, "identifier")
+            if ident:
+                name = _text(ident)
+                qualified = f"{scope}.{name}" if scope else name
+                symbols.append(Symbol(
+                    id=make_symbol_id(filename, qualified, "type"),
+                    file=filename, name=name, qualified_name=qualified,
+                    kind="type", language="dlang",
+                    signature=f"enum {name}",
+                    docstring="",
+                    line=node.start_point[0] + 1,
+                    end_line=node.end_point[0] + 1,
+                    byte_offset=node.start_byte,
+                    byte_length=node.end_byte - node.start_byte,
+                    content_hash=compute_content_hash(source_bytes[node.start_byte:node.end_byte]),
+                ))
+            return
+
+        elif node.type == "template_declaration":
+            ident = _first_child_of_type(node, "identifier")
+            if ident:
+                name = _text(ident)
+                qualified = f"{scope}.{name}" if scope else name
+                symbols.append(Symbol(
+                    id=make_symbol_id(filename, qualified, "function"),
+                    file=filename, name=name, qualified_name=qualified,
+                    kind="function", language="dlang",
+                    signature=f"template {name}",
+                    docstring="",
+                    line=node.start_point[0] + 1,
+                    end_line=node.end_point[0] + 1,
+                    byte_offset=node.start_byte,
+                    byte_length=node.end_byte - node.start_byte,
+                    content_hash=compute_content_hash(source_bytes[node.start_byte:node.end_byte]),
+                ))
+            return
 
         for child in node.children:
             _walk(child, scope)

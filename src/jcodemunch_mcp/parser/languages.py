@@ -186,6 +186,28 @@ LANGUAGE_EXTENSIONS = {
     # OCaml
     ".ml": "ocaml",
     ".mli": "ocaml",
+    # F#
+    ".fs": "fsharp",
+    ".fsi": "fsharp",
+    ".fsx": "fsharp",
+    # Clojure
+    ".clj": "clojure",
+    ".cljs": "clojure",
+    ".cljc": "clojure",
+    ".edn": "clojure",
+    # Emacs Lisp
+    ".el": "elisp",
+    # Nim
+    ".nim": "nim",
+    ".nims": "nim",
+    ".nimble": "nim",
+    # Tcl
+    ".tcl": "tcl",
+    ".tk": "tcl",
+    ".itcl": "tcl",
+    # D
+    ".d": "dlang",
+    ".di": "dlang",
     # PL/SQL (extend existing SQL)
     ".pls": "sql",
     ".plb": "sql",
@@ -1752,6 +1774,115 @@ OCAML_SPEC = LanguageSpec(
 )
 
 
+# F# specification
+# tree-sitter node structure: function_or_value_defn > function_declaration_left/value_declaration_left > identifier
+# type_definition > record_type_defn/union_type_defn, module_defn > identifier
+# Custom parser in extractor.py via _parse_fsharp_symbols().
+FSHARP_SPEC = LanguageSpec(
+    ts_language="fsharp",
+    symbol_node_types={},
+    name_fields={},
+    param_fields={},
+    return_type_fields={},
+    docstring_strategy="preceding_comment",
+    decorator_node_type=None,
+    container_node_types=[],
+    constant_patterns=[],
+    type_patterns=[],
+)
+
+
+# Clojure specification
+# tree-sitter node structure: list_lit > sym_lit (defn/def/defmacro/defprotocol/defrecord/defmulti)
+# Custom parser in extractor.py via _parse_clojure_symbols().
+CLOJURE_SPEC = LanguageSpec(
+    ts_language="clojure",
+    symbol_node_types={},
+    name_fields={},
+    param_fields={},
+    return_type_fields={},
+    docstring_strategy="preceding_comment",
+    decorator_node_type=None,
+    container_node_types=[],
+    constant_patterns=[],
+    type_patterns=[],
+)
+
+
+# Emacs Lisp specification
+# tree-sitter node structure: function_definition > defun + symbol + list, special_form > defvar/defconst + symbol
+# macro_definition > defmacro + symbol + list
+# Custom parser in extractor.py via _parse_elisp_symbols().
+ELISP_SPEC = LanguageSpec(
+    ts_language="elisp",
+    symbol_node_types={},
+    name_fields={},
+    param_fields={},
+    return_type_fields={},
+    docstring_strategy="preceding_comment",
+    decorator_node_type=None,
+    container_node_types=[],
+    constant_patterns=[],
+    type_patterns=[],
+)
+
+
+# Nim specification
+# tree-sitter node structure: proc_declaration/func_declaration > identifier + parameter_declaration_list
+# type_section > type_declaration > type_symbol_declaration, var/let/const_section > variable_declaration
+# template_declaration/macro_declaration > identifier
+# Custom parser in extractor.py via _parse_nim_symbols().
+NIM_SPEC = LanguageSpec(
+    ts_language="nim",
+    symbol_node_types={},
+    name_fields={},
+    param_fields={},
+    return_type_fields={},
+    docstring_strategy="preceding_comment",
+    decorator_node_type=None,
+    container_node_types=[],
+    constant_patterns=[],
+    type_patterns=[],
+)
+
+
+# Tcl specification
+# tree-sitter node structure: procedure > proc + simple_word + arguments + braced_word
+# namespace > namespace + word_list (eval <name> { ... })
+# Custom parser in extractor.py via _parse_tcl_symbols().
+TCL_SPEC = LanguageSpec(
+    ts_language="tcl",
+    symbol_node_types={},
+    name_fields={},
+    param_fields={},
+    return_type_fields={},
+    docstring_strategy="preceding_comment",
+    decorator_node_type=None,
+    container_node_types=[],
+    constant_patterns=[],
+    type_patterns=[],
+)
+
+
+# D specification
+# tree-sitter node structure: function_declaration > type + identifier + parameters + function_body
+# class_declaration/struct_declaration/interface_declaration > identifier + aggregate_body
+# enum_declaration > identifier, template_declaration > identifier
+# Custom parser in extractor.py via _parse_dlang_symbols().
+DLANG_SPEC = LanguageSpec(
+    ts_language="d",
+    symbol_node_types={},
+    name_fields={},
+    param_fields={},
+    return_type_fields={},
+    docstring_strategy="preceding_comment",
+    decorator_node_type=None,
+    container_node_types=[],
+    constant_patterns=[],
+    type_patterns=[],
+)
+
+
 # Language registry
 LANGUAGE_REGISTRY = {
     "python": PYTHON_SPEC,
@@ -1821,6 +1952,12 @@ LANGUAGE_REGISTRY = {
     "powershell": POWERSHELL_SPEC,
     "apex": APEX_SPEC,
     "ocaml": OCAML_SPEC,
+    "fsharp": FSHARP_SPEC,
+    "clojure": CLOJURE_SPEC,
+    "elisp": ELISP_SPEC,
+    "nim": NIM_SPEC,
+    "tcl": TCL_SPEC,
+    "dlang": DLANG_SPEC,
 }
 
 logger = logging.getLogger(__name__)
