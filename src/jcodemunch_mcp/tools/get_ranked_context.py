@@ -15,8 +15,83 @@ from .search_symbols import (
     BYTES_PER_TOKEN,
 )
 
+# Prefer compiled jCore backend when available
+try:
+    from _jmunch_core import pack_budget as _native_pack
+    _HAS_JCORE = True
+except ImportError:
+    _HAS_JCORE = False
+
 # Weight for PageRank when strategy="combined"
 _PR_WEIGHT = 100.0
+
+# Diversity packing parameters
+_DIVERSITY_DECAY = 0.5       # penalty growth per same-file symbol
+_FILE_GROUP_CAP = 3          # max symbols from a single file
+
+
+def _pack_budget(
+    scored_items: list[tuple[float, dict]],
+    token_budget: int,
+    get_tokens: callable,
+    *,
+    diversity: bool = True,
+) -> tuple[list[tuple[float, dict, str, int]], int]:
+    """Diversity-aware greedy budget packing.
+
+    Args:
+        scored_items: List of (score, sym_dict) sorted by descending score.
+        token_budget: Hard cap on total tokens.
+        get_tokens: Callable(sym) -> (source_str, token_count).
+        diversity: Enable file-diversity penalty (default True).
+
+    Returns:
+        (packed, total_tokens) where packed is list of
+        (adjusted_score, sym, source, item_tokens).
+    """
+    # Use compiled jCore backend when available
+    if _HAS_JCORE:
+        # Load tokens lazily: only fetch source for candidates that could
+        # plausibly fit in the budget (up to ~2x budget worth of tokens).
+        # This avoids reading source for hundreds of low-ranked symbols.
+        preloaded = []
+        cumulative_tokens = 0
+        cutoff = token_budget * 2
+        for score, sym in scored_items:
+            source, tokens = get_tokens(sym)
+            preloaded.append((score, sym, source, tokens))
+            cumulative_tokens += tokens
+            if cumulative_tokens >= cutoff:
+                break
+
+        items = [
+            {"id": sym.get("id", ""), "file": sym.get("file", ""), "score": score, "tokens": tokens}
+            for score, sym, source, tokens in preloaded
+        ]
+        native_packed, total = _native_pack(items, token_budget, diversity)
+
+        # Map native results back to expected format with source strings
+        source_map = {sym.get("id", ""): (sym, source) for _, sym, source, _ in preloaded}
+        packed = []
+        for item in native_packed:
+            sym, source = source_map.get(item.symbol_id, ({}, ""))
+            packed.append((item.adjusted_score, sym, source, item.tokens))
+        return packed, total
+
+    # Python fallback — basic greedy packing (no diversity optimization)
+    packed: list[tuple[float, dict, str, int]] = []
+    total_tokens = 0
+
+    for score, sym in scored_items:
+        source, item_tokens = get_tokens(sym)
+        if item_tokens == 0:
+            continue
+        if total_tokens + item_tokens > token_budget:
+            continue
+        packed.append((score, sym, source, item_tokens))
+        total_tokens += item_tokens
+
+    return packed, total_tokens
 
 
 def get_ranked_context(
@@ -203,26 +278,35 @@ def get_ranked_context(
 
     scored.sort(key=lambda x: x[0], reverse=True)
 
-    # Greedy pack: load source and accumulate until budget exhausted
-    context_items: list[dict] = []
-    total_tokens = 0
     items_considered = len(scored)
 
+    # Build score lookup for BM25/PR per symbol
+    _score_lookup: dict[str, tuple[float, float]] = {}
     for combined_score, bm25_norm, pr_norm, sym in scored:
-        source = store.get_symbol_content(owner, name, sym["id"], _index=index) or ""
-        item_tokens = _count_tokens(source) if source else max(1, sym.get("byte_length", 0) // BYTES_PER_TOKEN)
-        if total_tokens + item_tokens > token_budget:
-            continue  # skip symbols that don't fit; keep trying smaller ones
+        _score_lookup[sym["id"]] = (bm25_norm, pr_norm)
 
+    def _get_tokens(sym):
+        source = store.get_symbol_content(owner, name, sym["id"], _index=index) or ""
+        tokens = _count_tokens(source) if source else max(1, sym.get("byte_length", 0) // BYTES_PER_TOKEN)
+        return source, tokens
+
+    packed, total_tokens = _pack_budget(
+        [(combined_score, sym) for combined_score, _, _, sym in scored],
+        token_budget,
+        _get_tokens,
+    )
+
+    context_items: list[dict] = []
+    for adj_score, sym, source, item_tokens in packed:
+        bm25_norm, pr_norm = _score_lookup.get(sym["id"], (0.0, 0.0))
         context_items.append({
             "symbol_id": sym["id"],
             "relevance_score": round(bm25_norm, 4),
             "centrality_score": round(pr_norm, 4),
-            "combined_score": round(combined_score, 4),
+            "combined_score": round(adj_score, 4),
             "tokens": item_tokens,
             "source": source,
         })
-        total_tokens += item_tokens
 
     # Negative evidence for low-confidence or empty results
     _ne_threshold = _NEGATIVE_EVIDENCE_THRESHOLD
@@ -365,32 +449,42 @@ def _get_ranked_context_fusion(
 
     fused = fuse(channels, smoothing=smoothing, weights=weights)
 
-    # Greedy budget packing
+    # Diversity-aware budget packing
     sym_by_id = {sym["id"]: sym for sym in candidates}
-    context_items = []
-    total_tokens = 0
 
+    # Build fused score lookup for channel contributions
+    _fused_lookup: dict[str, object] = {fr.symbol_id: fr for fr in fused}
+
+    # Filter to valid symbols and pass to packer
+    fused_scored = []
     for fr in fused:
         sym = sym_by_id.get(fr.symbol_id)
-        if not sym:
-            continue
-        source = store.get_symbol_content(owner, name, sym["id"], _index=index) or ""
-        item_tokens = _count_tokens(source) if source else max(1, sym.get("byte_length", 0) // BYTES_PER_TOKEN)
-        if total_tokens + item_tokens > token_budget:
-            continue
+        if sym:
+            fused_scored.append((fr.score, sym))
 
+    def _get_tokens_fusion(sym):
+        source = store.get_symbol_content(owner, name, sym["id"], _index=index) or ""
+        tokens = _count_tokens(source) if source else max(1, sym.get("byte_length", 0) // BYTES_PER_TOKEN)
+        return source, tokens
+
+    packed, total_tokens = _pack_budget(
+        fused_scored, token_budget, _get_tokens_fusion,
+    )
+
+    context_items = []
+    for adj_score, sym, source, item_tokens in packed:
+        fr = _fused_lookup.get(sym["id"])
         context_items.append({
             "symbol_id": sym["id"],
-            "fusion_score": round(fr.score, 6),
-            "channels": {k: round(v, 6) for k, v in fr.channel_contributions.items()},
+            "fusion_score": round(adj_score, 6),
+            "channels": {k: round(v, 6) for k, v in fr.channel_contributions.items()} if fr else {},
             "tokens": item_tokens,
             "source": source,
         })
-        total_tokens += item_tokens
 
     raw_bytes = sum(
-        index.file_sizes.get(sym_by_id.get(fr.symbol_id, {}).get("file", ""), 0)
-        for fr in fused[:len(context_items)]
+        index.file_sizes.get(sym.get("file", ""), 0)
+        for _, sym, _, _ in packed
     )
     response_bytes = total_tokens * BYTES_PER_TOKEN
     tokens_saved = estimate_savings(raw_bytes, response_bytes)

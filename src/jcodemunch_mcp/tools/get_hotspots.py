@@ -23,6 +23,13 @@ from typing import Optional
 from ..storage import IndexStore
 from ._utils import resolve_repo
 
+# Prefer compiled jCore backend when available
+try:
+    from _jmunch_core import compute_hotspots as _native_hotspots
+    _HAS_JCORE = True
+except ImportError:
+    _HAS_JCORE = False
+
 logger = logging.getLogger(__name__)
 
 
@@ -114,48 +121,70 @@ def get_hotspots(
             git_available = True
             file_churn = _get_file_churn(index.source_root, days)
 
-    # Normalise file paths: git outputs forward-slash paths; index may use either
-    file_churn_norm = {k.replace("\\", "/"): v for k, v in file_churn.items()}
+    # Use compiled jCore backend when available
+    if _HAS_JCORE:
+        # Pre-filter in Python to avoid copying ALL symbols into dicts
+        sym_dicts = []
+        for sym in index.symbols:
+            if sym.get("kind") not in ("function", "method"):
+                continue
+            cyc = sym.get("cyclomatic") or 0
+            if cyc < min_complexity:
+                continue
+            sym_dicts.append({
+                "id": sym.get("id", ""), "name": sym.get("name", ""),
+                "kind": sym.get("kind", ""), "file": sym.get("file", ""),
+                "line": sym.get("line") or 0,
+                "cyclomatic": cyc,
+                "max_nesting": sym.get("max_nesting") or 0,
+                "param_count": sym.get("param_count") or 0,
+            })
+        native_results = _native_hotspots(sym_dicts, file_churn, min_complexity, top_n)
+        top = [dict(r) for r in native_results]
+    else:
+        # Python fallback
+        # Normalise file paths: git outputs forward-slash paths; index may use either
+        file_churn_norm = {k.replace("\\", "/"): v for k, v in file_churn.items()}
 
-    candidates: list[dict] = []
-    for sym in index.symbols:
-        if sym.get("kind") not in ("function", "method"):
-            continue
-        cyclomatic = sym.get("cyclomatic") or 0
-        if cyclomatic < min_complexity:
-            continue
+        candidates: list[dict] = []
+        for sym in index.symbols:
+            if sym.get("kind") not in ("function", "method"):
+                continue
+            cyclomatic = sym.get("cyclomatic") or 0
+            if cyclomatic < min_complexity:
+                continue
 
-        file_path = sym.get("file", "")
-        file_norm = file_path.replace("\\", "/")
-        churn = file_churn_norm.get(file_norm, 0)
+            file_path = sym.get("file", "")
+            file_norm = file_path.replace("\\", "/")
+            churn = file_churn_norm.get(file_norm, 0)
 
-        hotspot_score = round(cyclomatic * math.log1p(churn), 4)
+            hotspot_score = round(cyclomatic * math.log1p(churn), 4)
 
-        if hotspot_score > 10:
-            assessment = "high"
-        elif hotspot_score > 3:
-            assessment = "medium"
-        else:
-            assessment = "low"
+            if hotspot_score > 10:
+                assessment = "high"
+            elif hotspot_score > 3:
+                assessment = "medium"
+            else:
+                assessment = "low"
 
-        candidates.append({
-            "symbol_id": sym.get("id", ""),
-            "name": sym.get("name", ""),
-            "kind": sym.get("kind", ""),
-            "file": file_path,
-            "line": sym.get("line") or 0,
-            "cyclomatic": cyclomatic,
-            "max_nesting": sym.get("max_nesting") or 0,
-            "param_count": sym.get("param_count") or 0,
-            "churn": churn,
-            "hotspot_score": hotspot_score,
-            "assessment": assessment,
-        })
+            candidates.append({
+                "symbol_id": sym.get("id", ""),
+                "name": sym.get("name", ""),
+                "kind": sym.get("kind", ""),
+                "file": file_path,
+                "line": sym.get("line") or 0,
+                "cyclomatic": cyclomatic,
+                "max_nesting": sym.get("max_nesting") or 0,
+                "param_count": sym.get("param_count") or 0,
+                "churn": churn,
+                "hotspot_score": hotspot_score,
+                "assessment": assessment,
+            })
 
-    candidates.sort(key=lambda x: -x["hotspot_score"])
-    top = candidates[:max(1, top_n)]
+        candidates.sort(key=lambda x: -x["hotspot_score"])
+        top = candidates[:max(1, top_n)]
 
-    has_complexity_data = any(c["cyclomatic"] > 0 for c in candidates)
+    has_complexity_data = any(c.get("cyclomatic", 0) > 0 for c in top)
     note = None
     if not has_complexity_data:
         note = (

@@ -2,6 +2,14 @@
 
 All notable changes to jcodemunch-mcp are documented here.
 
+## [1.44.2] — 2026-04-15
+
+### Fixed
+- **Content hash consistency** — drift detection now always uses SHA-256, preventing false-positive staleness on existing indexes.
+- **Budget packing efficiency** — lazy source loading cuts memory usage for large repos (only loads ~2× budget worth of candidates instead of all).
+- **Hotspot filtering** — pre-filters symbols by kind/complexity before scoring, avoiding unnecessary work on large indexes.
+- **BM25 tokenizer quality** — abbreviation expansions ("database", "configuration") are no longer over-stemmed to invalid fragments; stemmer and dedup performance improved.
+
 ## [1.44.1] — 2026-04-14
 
 ### Fixed

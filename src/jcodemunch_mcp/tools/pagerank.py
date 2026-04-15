@@ -2,6 +2,13 @@
 
 from typing import Optional
 
+# Prefer compiled jCore backend when available
+try:
+    from _jmunch_core import compute_pagerank as _native_pagerank
+    _HAS_JCORE = True
+except ImportError:
+    _HAS_JCORE = False
+
 
 def compute_pagerank(
     imports: dict,
@@ -27,10 +34,8 @@ def compute_pagerank(
     if n == 0:
         return {}, 0
 
-    # Build directed adjacency lists from import graph
-    out_links: dict = {f: [] for f in source_files}
-    in_links: dict = {f: [] for f in source_files}
-
+    # Resolve import specifiers to directed edges
+    edges: list[tuple[str, str]] = []
     for src_file, file_imports in (imports or {}).items():
         if src_file not in source_file_set:
             continue
@@ -39,8 +44,18 @@ def compute_pagerank(
             target = resolve_specifier(imp["specifier"], src_file, source_file_set, alias_map, psr4_map)
             if target and target != src_file and target in source_file_set and target not in seen:
                 seen.add(target)
-                out_links[src_file].append(target)
-                in_links[target].append(src_file)
+                edges.append((src_file, target))
+
+    # Use compiled jCore backend when available
+    if _HAS_JCORE:
+        return _native_pagerank(edges, list(source_files), damping=damping, max_iter=max_iter, tol=tol)
+
+    # Python fallback — build adjacency from resolved edges
+    out_links: dict = {f: [] for f in source_files}
+    in_links: dict = {f: [] for f in source_files}
+    for src_file, target in edges:
+        out_links[src_file].append(target)
+        in_links[target].append(src_file)
 
     # Initialize uniform distribution
     scores: dict = {f: 1.0 / n for f in source_files}

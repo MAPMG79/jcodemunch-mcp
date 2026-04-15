@@ -11,6 +11,13 @@ from ..storage import IndexStore, CodeIndex, record_savings, estimate_savings, c
 from ..parser.imports import resolve_specifier
 from ._utils import resolve_repo, resolve_fqn
 
+# Prefer compiled jCore tokenizer when available (stemming + abbreviation expansion)
+try:
+    from _jmunch_core import tokenize as _jcore_tokenize
+    _HAS_JCORE_TOKENIZER = True
+except ImportError:
+    _HAS_JCORE_TOKENIZER = False
+
 BYTES_PER_TOKEN = 4
 
 # Fuzzy search: BM25 score below this auto-triggers the fuzzy pass
@@ -93,10 +100,16 @@ def result_cache_invalidate_repo(repo_key: str) -> int:
 
 
 def _tokenize(text: str) -> list[str]:
-    """Split camelCase / snake_case text into lowercase tokens."""
+    """Split camelCase / snake_case text into lowercase tokens.
+
+    When jCore is available, also stems and expands abbreviations
+    (e.g. "searching" -> ["searching", "search"], "db" -> ["db", "database"]).
+    """
     if not text:
         return []
-    # Insert separator before each uppercase letter that follows a lowercase letter
+    if _HAS_JCORE_TOKENIZER:
+        return _jcore_tokenize(text)
+    # Python fallback: basic split only (no stemming, no abbreviation expansion)
     text = _CAMEL_RE.sub(r"\1_\2", text)
     return [t.lower() for t in _TOKEN_RE.findall(text)]
 

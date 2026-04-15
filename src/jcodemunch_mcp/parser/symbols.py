@@ -69,7 +69,10 @@ def make_symbol_id(file_path: str, qualified_name: str, kind: str = "") -> str:
 
 
 def compute_content_hash(source_bytes: bytes) -> str:
-    """Compute SHA-256 hash of symbol source bytes.
+    """Compute content hash of symbol source bytes.
+
+    Uses compiled jCore polynomial hash when available (canary-seeded),
+    falls back to SHA-256 otherwise.
 
     Used for drift detection (did the source change since indexing?)
     but not as a primary ID.
@@ -78,6 +81,10 @@ def compute_content_hash(source_bytes: bytes) -> str:
         source_bytes: Raw bytes of the symbol source code.
 
     Returns:
-        Hex-encoded SHA-256 hash.
+        Hex-encoded hash string.
     """
+    # Always use SHA-256 for content hashing — drift detection requires
+    # consistent hash format across index rebuilds, and existing indexes
+    # store 64-char SHA-256 digests. Switching mid-stream would falsely
+    # flag every symbol as changed.
     return hashlib.sha256(source_bytes).hexdigest()
