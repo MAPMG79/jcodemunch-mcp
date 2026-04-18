@@ -974,7 +974,8 @@ async def test_tool_profile_core():
     try:
         tools = await list_tools()
         names = {t.name for t in tools}
-        assert names == _TOOL_TIER_CORE
+        # Core tier + the two always-present runtime tools
+        assert names == _TOOL_TIER_CORE | {"set_tool_tier", "announce_model"}
         # Core must include the essentials
         for essential in ("search_symbols", "get_symbol_source", "list_repos",
                           "get_file_tree", "index_folder"):
@@ -1004,7 +1005,8 @@ async def test_tool_profile_standard():
     try:
         tools = await list_tools()
         names = {t.name for t in tools}
-        assert names == _TOOL_TIER_STANDARD
+        # Standard tier + the two always-present runtime tools
+        assert names == _TOOL_TIER_STANDARD | {"set_tool_tier", "announce_model"}
         # Standard includes analytics
         assert "get_hotspots" in names
         assert "get_blast_radius" in names

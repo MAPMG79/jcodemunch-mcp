@@ -188,6 +188,54 @@ def _log_startup_validation_warnings() -> None:
     except Exception as exc:  # noqa: BLE001
         logger.debug("startup validation failed: %s", exc, exc_info=True)
 
+
+async def _apply_model_announcement(model: str) -> dict:
+    """Resolve model → tier, switch if changed, emit list_changed if changed.
+
+    Gated by the adaptive_tiering config flag. When the flag is false
+    (the default), this is a no-op: returns the current tier without
+    switching. set_tool_tier is not affected by this flag because it is
+    an explicit user invocation.
+    """
+    from .tier_resolver import resolve_model_to_tier
+    adaptive = bool(config_module.get("adaptive_tiering", False))
+    if not adaptive:
+        return {
+            "ok": True,
+            "tier": _effective_profile(),
+            "changed": False,
+            "adaptive_tiering": False,
+            "_meta": {
+                "hint": (
+                    "adaptive_tiering is disabled in config.jsonc — "
+                    "model self-report accepted but tier was not "
+                    "switched. Set adaptive_tiering: true to enable."
+                )
+            },
+        }
+
+    mp = config_module.get("model_tier_map") or {}
+    tier, match_reason = resolve_model_to_tier(model, mp)
+    prev = _effective_profile()
+    changed = tier != prev
+    res = {
+        "ok": True,
+        "tier": tier,
+        "changed": changed,
+        "match_reason": match_reason,
+        "adaptive_tiering": True,
+    }
+    if match_reason == "unmatched_fallback":
+        res.setdefault("_meta", {})["warning"] = (
+            f"model {model!r} did not match any entry in model_tier_map; "
+            f"falling back to 'full'. Add a pattern to model_tier_map to "
+            f"route this model explicitly."
+        )
+    if changed:
+        _set_session_tier(tier)
+        await _emit_tools_list_changed()
+    return res
+
 # Parameters stripped from tool schemas when compact_schemas is enabled.
 # These are advanced/rarely-used params that cost tokens every session but
 # are used <5% of the time.  The underlying handler still accepts them.
@@ -441,7 +489,7 @@ async def list_tools() -> list[Tool]:
 
 def _build_tools_list() -> list[Tool]:
     """Build the full tool list, applying config-driven filtering and overrides."""
-    tools = [
+    all_tools = [
         Tool(
             name="index_repo",
             description="Index a GitHub repository's source code. Fetches files, parses ASTs, extracts symbols, and saves to local storage. Set JCODEMUNCH_USE_AI_SUMMARIES=false to disable AI summaries globally.",
@@ -2240,7 +2288,49 @@ def _build_tools_list() -> list[Tool]:
                 "required": ["repo", "criteria"],
             },
         ),
+        # --- Runtime tier-switch tools (always force-included below) ---------
+        Tool(
+            name="set_tool_tier",
+            description=(
+                "Explicit tier override for the current session. "
+                "Narrows or widens the exposed tool list to 'core' / 'standard' / 'full'. "
+                "Prefer plan_turn(model=...) for routine per-task use; use "
+                "set_tool_tier only when you need an explicit override (e.g. escalate "
+                "mid-task to 'full' after a capability-gated failure)."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "tier": {
+                        "type": "string",
+                        "enum": ["core", "standard", "full"],
+                    },
+                },
+                "required": ["tier"],
+            },
+        ),
+        Tool(
+            name="announce_model",
+            description=(
+                "Agent self-reports its active model identifier. Server resolves to a "
+                "tier via model_tier_map (fuzzy: normalize → exact → glob → substring "
+                "→ '*' → 'full') and narrows the exposed tool list accordingly. "
+                "Idempotent: a second call with the same model is a cheap no-op. "
+                "Prefer calling plan_turn(model=...) for routine per-task use; use "
+                "announce_model as a fallback when plan_turn is not appropriate for "
+                "the current task."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "model": {"type": "string", "description": "Your active model identifier, e.g. 'claude-haiku-4-5'."},
+                },
+                "required": ["model"],
+            },
+        ),
     ]
+    # Start with a mutable copy for filtering.
+    tools = list(all_tools)
     # --- Profile filtering ---------------------------------------------------
     profile = _effective_profile()
     allowed = _resolve_tier_bundle(profile)
@@ -2251,6 +2341,14 @@ def _build_tools_list() -> list[Tool]:
     disabled = config_module.get("disabled_tools", [])
     if disabled:
         tools = [t for t in tools if t.name not in disabled]
+
+    # Force-include runtime tier-switch tools so users can never lose access
+    # to their own tier controls via config edits.
+    _ALWAYS_PRESENT = {"set_tool_tier", "announce_model"}
+    present_names = {t.name for t in tools}
+    missing = _ALWAYS_PRESENT - present_names
+    if missing:
+        tools.extend(t for t in all_tools if t.name in missing)
 
     # SQL gating: auto-disable search_columns when SQL not in languages
     languages = config_module.get("languages")
@@ -3318,6 +3416,22 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                     storage_path=storage_path,
                 )
             )
+        elif name == "set_tool_tier":
+            tier = arguments.get("tier")
+            if tier not in ("core", "standard", "full"):
+                result = {"error": f"invalid tier: {tier!r}"}
+            else:
+                prev = _effective_profile()
+                _set_session_tier(tier)
+                if tier != prev:
+                    await _emit_tools_list_changed()
+                result = {"ok": True, "tier": tier, "changed": tier != prev}
+        elif name == "announce_model":
+            model = arguments.get("model", "")
+            if not isinstance(model, str) or not model:
+                result = {"error": "model parameter is required and must be a non-empty string"}
+            else:
+                result = await _apply_model_announcement(model)
         else:
             result = {"error": f"Unknown tool: {name}"}
 
