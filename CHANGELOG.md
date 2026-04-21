@@ -2,6 +2,52 @@
 
 All notable changes to jcodemunch-mcp are documented here.
 
+## [1.72.0] — 2026-04-21
+
+Correctness + reach release: fixes six tier-1 MUNCH encoders that had shipped
+against imagined response shapes (silent data loss in `get_blast_radius`,
+`find_importers`, `find_references`, `get_signal_chains`, `get_tectonic_map`,
+`get_dependency_cycles`), and adds generic monorepo/`extends`-chain support to
+the tsconfig alias loader so path aliases resolve in any workspace layout.
+
+### Fixed
+- **MUNCH tier-1 encoder alignment** (#256, credit @MariusAdrian88). Six
+  encoders realigned to the actual tool responses. Encoding IDs bumped
+  (`br1→br2`, `fi1→fi2`, `fr1→fr2`, `sc1→sc2`, `tm1→tm2`, `dc1→dc2`); old
+  payloads were lossy and are retired cleanly.
+  - `get_blast_radius`: `symbol` now encoded as a nested dict (was serialized
+    as Python repr string); `confirmed`/`potential` tables replace the
+    always-empty `affected_symbols`/`importer_files`; correct scalar names
+    (`importer_count`, `confirmed_count`, `potential_count`, `overall_risk_score`).
+  - `find_importers`: columns `[file, specifier, has_importers]` (was invalid
+    `line`/`column`); scalar `file_path` (was `file`); batch mode preserved via
+    JSON blob.
+  - `find_references`: nested `references[].matches[]` now flattened and
+    regrouped round-trip; empty-match groups preserved via `__empty_groups__`.
+  - `get_signal_chains`: all three response modes supported (discovery, lookup,
+    no-gateway) with mode-specific `_meta` dispatch; correct column set
+    including `gateway_name`, `chain_reach`, `depth_from_gateway`.
+  - `get_tectonic_map`: correct plate/drifter columns (`plate_id`, `anchor`,
+    `cohesion`, `majority_directory`); `isolated_files` moved to JSON (is a
+    `list[str]`, not a dict table); optional plate fields pruned on decode.
+  - `get_dependency_cycles`: `list[list[str]]` shape now transformed via
+    `\x1f` separator (previously silently skipped by dict-only row guard).
+
+### Added
+- **`__stypes` type preservation in `schema_driven.py`** (#256). Non-string
+  scalar types (int, float, bool) are hinted on encode and coerced on decode,
+  reaching parity with `generic.py`. Old payloads without `__stypes` fall back
+  to string decoding — backward-compatible.
+- **Generic tsconfig discovery walker** (#257, credit @bertPB). Replaces the
+  previous root-only lookup with a depth-limited (≤5) walker that finds all
+  `tsconfig*.json` / `jsconfig*.json` files and follows each file's `extends`
+  chain. Handles TS 5+ array-form `extends`, circular chains (via `seen_cfg`
+  dedup), and package refs like `@tsconfig/recommended` (boundary-checked via
+  `relative_to(root)`). Nx/Turborepo layouts (`libs/`, `services/`,
+  `modules/`) and repos that centralize aliases in `tsconfig.base.json` /
+  `tsconfig.paths.json` now resolve correctly. Skip list extended with
+  `.turbo` and `.vercel`.
+
 ## [1.71.0] — 2026-04-21
 
 One-line CLAUDE.md / AGENT.md via the new `jcodemunch_guide` tool. Resolves
